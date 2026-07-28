@@ -3,6 +3,7 @@
 .vscode/.browse.vc.db
 .vscode/cmake-kit-status.json
 .vscode/settings.json
+.cache/
 
 # ---(Build) ---
 build/
