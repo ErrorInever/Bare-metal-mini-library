@@ -1,0 +1,31 @@
+# --- specific VS Code ---
+.vscode/ipch/
+.vscode/.browse.vc.db
+.vscode/cmake-kit-status.json
+.vscode/settings.json
+
+# ---(Build) ---
+build/
+Debug/
+Release/
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.list
+
+# ---(IntelliSense) ---
+*.o
+*.d
+*.su
+*.crf
+*.dep
+
+# --- configure files STM32 (CubeMX / CMake) ---
+*.bak
+*.log
+
+# --- system ---
+.DS_Store
+Thumbs.db
