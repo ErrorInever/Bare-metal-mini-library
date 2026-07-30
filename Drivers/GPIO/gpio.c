@@ -6,7 +6,7 @@
 #include "stm32f446xx.h"
 
 
-// EXTI lines. each line has callback
+// EXTI lines. Each line has callback
 exti_slot_t exti_slots[16] = {0};
 
 static inline bmml_status_t exti_claim_line(const gpio_t *gpio) {
@@ -18,7 +18,6 @@ static inline bmml_status_t exti_claim_line(const gpio_t *gpio) {
     slot->owner_port = gpio->port;
     return BMML_OK;
 }
-
 
 bmml_status_t gpio_init(const gpio_t *gpio, gpio_mode_t mode, gpio_pull_t pull, gpio_speed_t speed, gpio_otype_t otype) {
     if(gpio == NULL || gpio->pin > 15) return BMML_INVALID_ARG;
@@ -99,3 +98,23 @@ bmml_status_t gpio_enable_exti_isr(const gpio_t *gpio, edge_type_t edge) {
 
     return BMML_OK;
 }
+
+// EXTI ISR
+static void gpio_isr_handle(uint16_t pin) {
+    if(EXTI->PR & (1U << pin)) {
+        EXTI->PR = (1U << pin);     // reset flag
+        if(exti_slots[pin].cb != NULL) {
+            gpio_t g = { .port = (GPIO_TypeDef *)exti_slots[pin].owner_port, .pin = pin};
+            exti_slots[pin].cb(&g);
+        } 
+    }
+}
+
+// IRQHandlers
+void EXTI0_IRQHandler(void) { gpio_isr_handle(0); }
+void EXTI1_IRQHandler(void) { gpio_isr_handle(1); }
+void EXTI2_IRQHandler(void) { gpio_isr_handle(2); }
+void EXTI3_IRQHandler(void) { gpio_isr_handle(3); }
+void EXTI4_IRQHandler(void) { gpio_isr_handle(4); }
+void EXTI9_5_IRQHandler(void) { for(int i = 5; i <= 9; i++) gpio_isr_handle(i); }
+void EXTI15_10_IRQHandler(void) { for(int i = 10; i <= 15; i++) gpio_isr_handle(i); }
