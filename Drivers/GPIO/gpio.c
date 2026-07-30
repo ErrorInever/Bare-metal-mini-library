@@ -69,15 +69,15 @@ bmml_status_t gpio_set_alternate_func(const gpio_t *gpio, uint8_t af_num) {
 bmml_status_t gpio_enable_exti_isr(const gpio_t *gpio, edge_type_t edge) {
     if(gpio == NULL || gpio->pin > 15) return BMML_INVALID_ARG;
 
+    int idx = gpio_port_res_idx(gpio->port);
+    if (idx < 0) return BMML_INVALID_ARG;   // port doesn't exist in current MCU
+
     bmml_status_t st = exti_claim_line(gpio);
     if(st != BMML_OK) return st;
 
     // Enable RCC SYSCFG
     RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
     (void)RCC->APB2ENR;
-
-    int idx = gpio_port_res_idx(gpio->port);
-    if (idx < 0) return BMML_INVALID_ARG;   // port doesn't exist in current MCU
 
     // Сonnect the EXTI N line to the port M with SYSCFG
     uint8_t exticr_idx = gpio->pin >> 2U;   // each pin 4 bite
