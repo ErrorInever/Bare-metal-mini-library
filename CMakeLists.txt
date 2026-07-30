@@ -45,8 +45,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 
 # 4. Headers
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    Core/Inc
-    Core/Resources
+    Core/Inc/
+    Core/Resources/
     Drivers/CMSIS/Include
     Drivers/CMSIS/Device/ST/STM32F4xx/Include
     Drivers/GPIO/gpio.h
