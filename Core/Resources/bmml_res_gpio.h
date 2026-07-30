@@ -48,5 +48,5 @@ static inline IRQn_Type gpio_exti_irqn(uint16_t pin) {
 #endif
 
 
-#endif /* GPIO_H_ */
+#endif /* BMML_RES_GPIO_H */
 
