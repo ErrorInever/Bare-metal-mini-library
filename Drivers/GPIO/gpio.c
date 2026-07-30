@@ -7,7 +7,7 @@
 
 
 // EXTI lines. Each line has callback
-exti_slot_t exti_slots[16] = {0};
+static exti_slot_t exti_slots[16] = {0};
 
 static inline bmml_status_t exti_claim_line(const gpio_t *gpio) {
     exti_slot_t *slot = &exti_slots[gpio->pin];
@@ -47,8 +47,9 @@ bmml_status_t gpio_init(const gpio_t *gpio, gpio_mode_t mode, gpio_pull_t pull, 
 
 bmml_status_t gpio_set_exti_callback(const gpio_t *gpio, gpio_callback_t callback) {
     if(gpio == NULL || gpio->pin > 15) return BMML_INVALID_ARG;
-    bmml_status_t st = exti_claim_line(gpio);
+    if(gpio_port_res_idx(gpio->port) < 0) return BMML_INVALID_ARG;
 
+    bmml_status_t st = exti_claim_line(gpio);
     if(st != BMML_OK) return st;
 
     exti_slots[gpio->pin].cb = callback;
@@ -92,7 +93,10 @@ bmml_status_t gpio_enable_exti_isr(const gpio_t *gpio, edge_type_t edge) {
     // Select and enable edge trigger
     if(edge == RISING_EDGE || edge == RISING_FALLING) EXTI->RTSR  |= (1U << gpio->pin);
     if(edge == FALLING_EDGE || edge == RISING_FALLING) EXTI->FTSR |= (1U << gpio->pin);
-
+    
+    // Reset stale pending
+    EXTI->PR = (1U << gpio->pin);
+    
     // Enable interrupt in NVIC
     NVIC_EnableIRQ(gpio_exti_irqn(gpio->pin));
 
