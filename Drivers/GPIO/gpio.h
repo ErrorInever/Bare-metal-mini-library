@@ -30,10 +30,6 @@ typedef struct {
 } exti_slot_t;
 
 
-// EXTI lines. each line has callback
-static exti_slot_t exti_slots[16] = {0};
-
-
 /** * @enum gpio_mode_t
  * @brief Standard hardware pin operating modes.
  */

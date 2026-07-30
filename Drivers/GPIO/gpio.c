@@ -6,6 +6,18 @@
 #include "stm32f446xx.h"
 
 
+// EXTI lines. each line has callback
+exti_slot_t exti_slots[16] = {0};
+
+static inline bmml_status_t exti_claim_line(const gpio_t *gpio) {
+    exti_slot_t *slot = &exti_slots[gpio->pin];
+    // The line is busy with another port
+    if(slot->owner_port != NULL && slot->owner_port != gpio->port)
+        return BMML_BUSY;
+
+    slot->owner_port = gpio->port;
+    return BMML_OK;
+}
 
 
 bmml_status_t gpio_init(const gpio_t *gpio, gpio_mode_t mode, gpio_pull_t pull, gpio_speed_t speed, gpio_otype_t otype) {
@@ -36,20 +48,16 @@ bmml_status_t gpio_init(const gpio_t *gpio, gpio_mode_t mode, gpio_pull_t pull, 
 
 bmml_status_t gpio_set_exti_callback(const gpio_t *gpio, gpio_callback_t callback) {
     if(gpio == NULL || gpio->pin > 15) return BMML_INVALID_ARG;
+    bmml_status_t st = exti_claim_line(gpio);
 
-    exti_slot_t *slot = &exti_slots[gpio->pin];
+    if(st != BMML_OK) return st;
 
-    // Line is still busy another PORT
-    if(slot->owner_port != NULL && slot->owner_port != gpio->port) return BMML_BUSY;
-
-    slot->owner_port = gpio->port;
-    slot->cb = callback;
-
+    exti_slots[gpio->pin].cb = callback;
     return BMML_OK;
 }
 
 bmml_status_t gpio_set_alternate_func(const gpio_t *gpio, uint8_t af_num) {
-    if(gpio == NULL || gpio->pin > 15 || af_num <= 15) return BMML_INVALID_ARG;
+    if(gpio == NULL || gpio->pin > 15 || af_num > 15) return BMML_INVALID_ARG;
 
     uint8_t reg_idx = gpio->pin >> 3U;              // (pin // 8), if 0..7 = 0, if 8..15 = 1
     uint8_t bit_pos = (gpio->pin & 0x07U) * 4U;     // pin % 0x07 * 4byte. 10pin & 0x07 = 2 -> 2 * 4 = 8 -> 8,9,10,11 
@@ -61,6 +69,9 @@ bmml_status_t gpio_set_alternate_func(const gpio_t *gpio, uint8_t af_num) {
 
 bmml_status_t gpio_enable_exti_isr(const gpio_t *gpio, edge_type_t edge) {
     if(gpio == NULL || gpio->pin > 15) return BMML_INVALID_ARG;
+
+    bmml_status_t st = exti_claim_line(gpio);
+    if(st != BMML_OK) return st;
 
     // Enable RCC SYSCFG
     RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
