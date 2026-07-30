@@ -29,8 +29,10 @@ typedef struct {
     const GPIO_TypeDef *owner_port;
 } exti_slot_t;
 
+
 // EXTI lines. each line has callback
 static exti_slot_t exti_slots[16] = {0};
+
 
 /** * @enum gpio_mode_t
  * @brief Standard hardware pin operating modes.
@@ -52,6 +54,7 @@ typedef enum {
     GPIO_PULL_DOWN    = 0x02    /**< Internal weak pull-down resistor engaged. */
 } gpio_pull_t;
 
+
 /** * @enum gpio_speed_t
  * @brief Output driver slew rate / frequency response controls.
  */
@@ -62,6 +65,7 @@ typedef enum {
     GPIO_SPEED_VERY_HIGH    = 0x03      /**< High speed (Max 50 MHz to 200 MHz - critical for high-speed buses). */
 } gpio_speed_t;
 
+
 /** * @enum gpio_otype_t
  * @brief Output driver electrical configuration types.
  */
@@ -69,6 +73,7 @@ typedef enum {
     GPIO_OTYPE_PP   = 0x00,     /**< Push-Pull output stage (Actively drives both High and Low levels). */
     GPIO_OTYPE_OD   = 0x01      /**< Open-Drain output stage (Requires external pull-up for High level). */
 } gpio_otype_t;
+
 
 /** * @enum edge_type_t
  * @brief Edge trigger detection conditions for EXTI external hardware interrupts.
@@ -80,8 +85,90 @@ typedef enum {
 } edge_type_t;
 
 
+/**
+ * @brief Performs complete initialization of a GPIO pin according to specified parameters.
+ * * Automatically enables the appropriate clock gating in the RCC block, sets basic modes,
+ * output types, operational speeds, and internal pull configurations inside the peripheral registers.
+ *
+ * @param[in] gpio   Pointer to the specific pin descriptor to initialize.
+ * @param[in] mode   Desired operating mode (Input, Output, AF, Analog).
+ * @param[in] pull   Internal resistor mapping (None, Pull-Up, Pull-Down).
+ * @param[in] speed  Output signal transition rate performance level.
+ * @param[in] otype  Output driver hardware configuration (Push-Pull or Open-Drain).
+ */
 bmml_status_t gpio_init(const gpio_t *gpio, gpio_mode_t mode, gpio_pull_t pull, gpio_speed_t speed, gpio_otype_t otype);
+
+
+/**
+ * @brief Registers a custom runtime interrupt handler callback routine for an EXTI line.
+ * * @note The internal lookup table allocates callbacks globally based on the pin number (0-15).
+ * Sharing a pin index across different ports (e.g., PA0 and PB0) will overwrite the entry.
+ *
+ * @param[in] gpio     Pointer to the target GPIO descriptor context.
+ * @param[in] callback User-defined function pointer to be executed within the ISR.
+ */
 bmml_status_t gpio_set_exti_callback(const gpio_t *gpio, gpio_callback_t callback);
+
+
+/**
+ * @brief Enters low-level setup routines to connect and activate external edge hardware interrupts.
+ * * Connects the physical pin through the `SYSCFG->EXTICR` multiplexer matrix to the designated 
+ * EXTI core line, configs the trigger registers (`RTSR`/`FTSR`), unmasks the interrupt line, 
+ * and enables the appropriate global vector address line within the core NVIC structure.
+ *
+ * @param[in] gpio Pointer to the pin structure acting as the trigger source.
+ * @param[in] edge Edge detection condition requirement flag (Rising, Falling, or Both).
+ */
+bmml_status_t gpio_enable_exti_isr(const gpio_t *gpio, edge_type_t edge);
+
+
+/**
+ * @brief Configures the alternate function multiplexer routing for a given pin.
+ * * Handles the complex bit shifting logic to map the 4-bit alternate function code
+ * to either the Low (`AFR[0]`) or High (`AFR[1]`) multiplexing register.
+ *
+ * @param[in] gpio   Pointer to the specific pin descriptor.
+ * @param[in] af_num Alternate function index number to apply (0 to 15).
+ */
+bmml_status_t gpio_set_alternate_func(const gpio_t *gpio, uint8_t af_num);
+
+
+/** * @brief Reads the actual live digital logic level present on a physical pin.
+ * * Captures current states directly by reading the peripheral Input Data Register (`IDR`).
+ * * @param[in] gpio Pointer to the target pin descriptor context.
+ * @return Current digital logic state (0 if level is LOW, 1 if level is HIGH). 
+ */
+static inline uint8_t gpio_read(const gpio_t *gpio) {
+    return (gpio->port->IDR & (1U << gpio->pin)) ? 1 : 0;
+}
+
+
+/** * @brief Atomically forces a GPIO output pin to a HIGH state.
+ * * Operates via a single-cycle write to the `BSRR` register.
+ * * @param[in] gpio Pointer to the target pin descriptor context.
+ */
+static inline void gpio_set(const gpio_t *gpio) {
+    gpio->port->BSRR = (1U << gpio->pin);
+}
+
+
+/** * @brief Atomically forces a GPIO output pin to a LOW state.
+ * * Operates via a single-cycle write to the upper 16-bits of the `BSRR` register.
+ * * @param[in] gpio Pointer to the target pin descriptor context.
+ */
+static inline void gpio_reset(const gpio_t *gpio) {
+    gpio->port->BSRR = (1U << (gpio->pin + 16U));
+}
+
+
+/** * @brief Inverts the current digital logic output state of a pin.
+ * * Accesses the Output Data Register (`ODR`) to toggle the targeted bitmask value.
+ * * @param[in] gpio Pointer to the target pin descriptor context.
+ */
+static inline void gpio_toggle(const gpio_t *gpio) {
+    gpio->port->ODR ^= (1U << gpio->pin);
+}
+
 
 #ifdef __cplusplus
 }
