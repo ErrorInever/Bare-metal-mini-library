@@ -1,12 +1,13 @@
 #ifndef BMML_RES_GPIO_H
 #define BMML_RES_GPIO_H
 
-#include "stm32f446xx.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include <stdint.h>
+#include "stm32f446xx.h"
 
 #define GPIO_PORT_RES_COUNT (sizeof(gpio_port_res)/sizeof(gpio_port_res[0]))
 /* Resources layer for GPIO */
