@@ -21,6 +21,7 @@ typedef struct {
 } gpio_t;
 
 // User callback definition
+// TODO: change to void type if status not needed
 typedef bmml_status_t (*gpio_callback_t)(const gpio_t *gpio);
 
 
