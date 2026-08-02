@@ -26,7 +26,7 @@ typedef bmml_status_t (*gpio_callback_t)(const gpio_t *gpio);
 
 
 typedef struct {
-    gpio_callback_t cb;
+    gpio_callback_t callback;
     const GPIO_TypeDef *owner_port;
 } exti_slot_t;
 

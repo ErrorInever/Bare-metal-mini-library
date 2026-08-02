@@ -52,7 +52,7 @@ bmml_status_t gpio_set_exti_callback(const gpio_t *gpio, gpio_callback_t callbac
     bmml_status_t st = exti_claim_line(gpio);
     if(st != BMML_OK) return st;
 
-    exti_slots[gpio->pin].cb = callback;
+    exti_slots[gpio->pin].callback = callback;
     return BMML_OK;
 }
 
@@ -107,9 +107,9 @@ bmml_status_t gpio_enable_exti_isr(const gpio_t *gpio, edge_type_t edge) {
 static void gpio_isr_handle(uint16_t pin) {
     if(EXTI->PR & (1U << pin)) {
         EXTI->PR = (1U << pin);     // reset flag
-        if(exti_slots[pin].cb != NULL) {
+        if(exti_slots[pin].callback != NULL) {
             gpio_t g = { .port = (GPIO_TypeDef *)exti_slots[pin].owner_port, .pin = pin};
-            exti_slots[pin].cb(&g);
+            exti_slots[pin].callback(&g);
         } 
     }
 }
