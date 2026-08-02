@@ -1,5 +1,5 @@
-#ifndef BMML_H
-#define BMML_H
+#ifndef BMML_STATUS_H
+#define BMML_STATUS_H
 
 // General enum status
 
