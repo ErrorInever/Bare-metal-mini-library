@@ -6,6 +6,8 @@
 extern "C" {
 #endif
 
+#define TIMER_RES_COUNT (sizeof(timer_res)/sizeof(timer_res[0]))
+
 #include <stdint.h>
 #include "stm32f446xx.h"
 #include "stdbool.h"
@@ -15,6 +17,8 @@ typedef enum {
     TIMER_CAT_GP,
     TIMER_CAT_ADVANCED
 } timer_category_t;
+
+static const uint32_t channel_enable[4] = {TIM_CCER_CC1E, TIM_CCER_CC2E, TIM_CCER_CC3E, TIM_CCER_CC4E};
 
 typedef struct {
     TIM_TypeDef *reg;
@@ -44,6 +48,16 @@ static const timer_res_t timer_res[] = {
     { TIM13, &RCC->APB1ENR, RCC_APB1ENR_TIM13EN, TIM8_UP_TIM13_IRQn,       TIMER_CAT_GP,        1, false, false },
     { TIM14, &RCC->APB1ENR, RCC_APB1ENR_TIM14EN, TIM8_TRG_COM_TIM14_IRQn,  TIMER_CAT_GP,        1, false, false },
 };
+
+// Get index of timer res
+static inline int timer_res_idx(const TIM_TypeDef *reg) {
+    for(int i = 0; i < (int)TIMER_RES_COUNT; i++) {
+        if(timer_res[i].reg == reg) return i;
+    }
+    return -1;
+}
+
+// TODO IRQn type
 
 
 #ifdef __cplusplus
