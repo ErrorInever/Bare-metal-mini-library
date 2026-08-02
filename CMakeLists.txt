@@ -38,9 +38,12 @@ add_executable(${CMAKE_PROJECT_NAME})
 # 3. Sources (include assambly startup)
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/main.c
+    Core/Src/bmml_utilities.c
+    Core/Src/bmml_irq_shared.c
     Core/Src/system_stm32f4xx.c
     startup_stm32f446xx.s
     Drivers/GPIO/gpio.c
+    Drivers/TIMERS/timer.c
 )
 
 # 4. Headers
@@ -50,6 +53,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/CMSIS/Include
     Drivers/CMSIS/Device/ST/STM32F4xx/Include
     Drivers/GPIO/gpio.h
+    Drivers/TIMERS/timer.h
 )
 
 # 5. Defines
