@@ -40,6 +40,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/main.c
     Core/Src/bmml_utilities.c
     Core/Src/bmml_irq_shared.c
+    Core/Src/bmml_dma_shared.c
     Core/Src/system_stm32f4xx.c
     startup_stm32f446xx.s
     Drivers/GPIO/gpio.c
