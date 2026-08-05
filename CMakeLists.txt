@@ -45,6 +45,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     startup_stm32f446xx.s
     Drivers/GPIO/gpio.c
     Drivers/TIMERS/timer.c
+    Drivers/DAC/dac.c
 )
 
 # 4. Headers
@@ -53,8 +54,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Resources/
     Drivers/CMSIS/Include
     Drivers/CMSIS/Device/ST/STM32F4xx/Include
-    Drivers/GPIO/gpio.h
-    Drivers/TIMERS/timer.h
+    Drivers/GPIO/
+    Drivers/TIMERS/
 )
 
 # 5. Defines
