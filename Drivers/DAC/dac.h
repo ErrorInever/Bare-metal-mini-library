@@ -17,6 +17,7 @@ extern "C" {
 typedef struct {
     const dac_res_t *res;
     dma_t dma;
+    timer_basic_t *timer;
     uint16_t *wave_buffer;      /**< Pointer to source memory buffer (RAM) containing digital wave samples. */
     uint16_t num_points;        /**< Total number of signal points/samples allocated inside the wave buffer. */
 } dac_t;
@@ -26,7 +27,7 @@ typedef struct {
 #endif
 
 bmml_status_t dac_dma_acquire(DAC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream, uint16_t *wave_buffer, 
-    uint16_t num_points , timer_basic_t *timer, dac_t **out);
+    uint16_t num_points, dac_t **out);
 
 bmml_status_t dac_dma_release(dac_t *dac);
 

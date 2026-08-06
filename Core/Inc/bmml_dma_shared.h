@@ -26,16 +26,6 @@ typedef struct {
     uint32_t channel;
 } dma_t;
 
-static DMA_Stream_TypeDef* dma1_streams[] = {
-    DMA1_Stream0,DMA1_Stream1, DMA1_Stream2, DMA1_Stream3, 
-    DMA1_Stream4, DMA1_Stream5, DMA1_Stream6, DMA1_Stream7
-};
-
-static DMA_Stream_TypeDef* dma2_streams[] = {
-    DMA2_Stream0,DMA2_Stream1, DMA2_Stream2, DMA2_Stream3, 
-    DMA2_Stream4, DMA2_Stream5, DMA2_Stream6, DMA2_Stream7
-};
-
 static const dma_res_t dma_res[] = {
     {DMA1, &RCC->AHB1ENR,RCC_AHB1ENR_DMA1EN}, 
     {DMA2, &RCC->AHB1ENR,RCC_AHB1ENR_DMA2EN}, 
@@ -46,15 +36,12 @@ static inline int dma_res_idx(const DMA_TypeDef *reg) {
     return -1;
 }
 
-static inline void dma_disable_stream(DMA_Stream_TypeDef *stream) {
+static inline bmml_status_t dma_disable_stream(DMA_Stream_TypeDef *stream) {
     stream->CR &= ~DMA_SxCR_EN;
-    while(stream->CR & DMA_SxCR_EN); // TODO: add timeout
-}
-
-// WARNING, clear all streams
-static inline void dma_reset_settings(dma_t *dma) {
-    dma->res->reg->LIFCR = 0xFFFFFFFFU;
-    dma->res->reg->HIFCR = 0xFFFFFFFFU;
+    uint32_t timeout = 10000;
+    while(stream->CR & DMA_SxCR_EN)
+        if(--timeout == 0) return BMML_TIMEOUT;
+    return BMML_OK;
 }
 
 static inline void dma_clear_stream_flags(DMA_TypeDef *dma, uint8_t stream) {

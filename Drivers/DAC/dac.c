@@ -23,10 +23,10 @@ static int dac_slot(const DAC_TypeDef *reg) {
 
 
 bmml_status_t dac_dma_acquire(DAC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream, uint16_t *wave_buffer, 
-    uint16_t num_points , timer_basic_t *timer, dac_t **out) {
+    uint16_t num_points, dac_t **out) {
+    if(out) *out = NULL;
     if(reg == NULL || dma == NULL) return BMML_INVALID_ARG;
-    if(dma != DMA1 || stream >= DMA_STREAM_COUNT) return BMML_INVALID_ARG;
-    if(timer == NULL || timer->res == NULL || timer->res->reg != TIM6) return BMML_INVALID_ARG;
+    if(reg == DAC1 && (dma != DMA1 || stream !=5)) return BMML_INVALID_ARG;
 
     int slot = dac_slot(reg);
     if(slot < 0) return BMML_INVALID_ARG;
@@ -38,9 +38,16 @@ bmml_status_t dac_dma_acquire(DAC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     int dma_idx = dma_res_idx(dma);
     if(dma_idx < 0) return BMML_INVALID_ARG;
     
+    // Acquire DMA stream
     DMA_Stream_TypeDef *dma_stream;
     bmml_status_t dma_status = bmml_dma_acquire_stream(dma, stream, &dma_stream);
     if(dma_status != BMML_OK) return dma_status;
+    // Acquire TIM6 timer
+    timer_basic_t *timer;
+    bmml_status_t tmr_status = timer_basic_acquire(TIM6, 100, NULL, &timer);
+    if(tmr_status != BMML_OK) {
+        bmml_dma_release_stream(dma, stream);
+    }
 
     dac_taken[slot] = true;
     dac_t *dac = &dac_pool[slot];
@@ -60,7 +67,7 @@ bmml_status_t dac_dma_acquire(DAC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     dma_disable_stream(dac->dma.stream);
     dma_clear_stream_flags(dac->dma.res->reg, dac->dma.num_stream);
 
-    // setup addresses
+    // Setup addresses
     // (Data Holding Register, 12-bit, Right-aligned, Channel 1
     dac->dma.stream->PAR = (uint32_t)&dac->res->reg->DHR12R1;
     dac->dma.stream->M0AR = (uint32_t)dac->wave_buffer;         // wave of signal
@@ -78,19 +85,18 @@ bmml_status_t dac_dma_acquire(DAC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     dac->dma.stream->CR = cr;
     
     // Configure timer
-    timer->res->reg->CR2 &= ~TIM_CR2_MMS;
-    timer->res->reg->CR2 |= (2U << TIM_CR2_MMS_Pos); // 010 : update event is used as trigger output
-
+    dac->timer = timer;
+    dac->timer->res->reg->CR2 &= ~TIM_CR2_MMS;
+    dac->timer->res->reg->CR2 |= (2U << TIM_CR2_MMS_Pos); // 010 : update event is used as trigger output
     // DAC config
     dac->res->reg->CR &= ~0xFFFFU;  // TODO: add 2 channel
     dac->res->reg->CR |= DAC_CR_TEN1;   // enable trigger TEN1 = 1
-
     // Enable DMA in DAC
     dac->res->reg->CR |= DAC_CR_DMAEN1;
     // Enable DAC module
     dac->res->reg->CR |= DAC_CR_EN1;
     // Enable timer
-    timer_basic_start(timer);
+    timer_basic_start(dac->timer);
 
     if(out) *out = dac;
 
@@ -98,16 +104,25 @@ bmml_status_t dac_dma_acquire(DAC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
 }
 
 bmml_status_t dac_dma_release(dac_t *dac) {
-    if(dac == NULL || dac->res == NULL || dac->dma.res == NULL) return BMML_INVALID_ARG;
+    if(dac == NULL || dac->res == NULL) return BMML_INVALID_ARG;
 
-    dac->res->reg->CR &= ~DAC_CR_EN1;
-    dac->res->reg->CR &= ~DAC_CR_DMAEN1;
-    dac->res->reg->CR &= ~DAC_CR_TEN1; 
+    int slot = dac_slot(dac->res->reg);
+    if(slot < 0) return BMML_INVALID_ARG;
+    if(!dac_taken[slot]) return BMML_INVALID_ARG;
 
-    dma_disable_stream(dac->dma.stream);
+    dac->res->reg->CR &= ~(DAC_CR_EN1 | DAC_CR_DMAEN1 | DAC_CR_TEN1);
+
+    if(dma_disable_stream(dac->dma.stream) != BMML_OK) return BMML_TIMEOUT;
+
     dma_clear_stream_flags(dac->dma.res->reg, dac->dma.num_stream);
     bmml_dma_release_stream(dac->dma.res->reg, dac->dma.num_stream);
 
+    timer_basic_stop(dac->timer);
+    if((timer_basic_release(dac->timer)) != BMML_OK) return BMML_INVALID_ARG;
+    dac->timer->res->reg->CR2 &= ~TIM_CR2_MMS;
+    dac->timer = NULL;
+    dac_taken[slot] = false;
+    dac_pool[slot] = (dac_t){0};
 
     return BMML_OK;
 }
