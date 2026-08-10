@@ -47,15 +47,23 @@ typedef struct {
 typedef struct adc_t {
     const adc_res_t *res;
     dma_t dma;
+    adc_mode_t mode;
     adc_channel_config_t *adc_channels;         /**< Pointer to user-allocated array containing channel-specific settings. */
+    uint8_t num_channels;                       /**< Number of active channels defined in the array (Maximum: 6). */
     adc_callback_t callback;
     uint16_t *data_buffer;      /**< Pointer to destination memory buffer (RAM) for automated DMA streaming. */
 } adc_t;
 
 
 
-bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream, adc_mode_t mode, uint16_t *data_buffer, adc_t **out);
+bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream, adc_mode_t mode, adc_channel_config_t *channels, 
+    uint8_t num_channels, uint16_t *data_buffer, uint8_t sample_time, adc_callback_t cb, adc_t **out);
 
+static inline void adc_start(adc_t *adc) {
+    if(adc->mode == CONTINUOUS || adc->mode == SCAN)
+        adc->res->reg->CR2 |= ADC_CR2_SWSTART;
+    // TODO: TIME_TRIGGER
+}
 
 
 #ifdef __cplusplus

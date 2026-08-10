@@ -14,17 +14,20 @@ extern "C" {
 typedef struct {
     ADC_TypeDef *reg;
     volatile uint32_t *rcc_reg;
+    uint32_t dma_channel; // DMA channel select for DMA2 (0/1/2 for ADC1/2/3)
+    uint8_t dma_stream;
     uint32_t rcc_mask;
+    uint32_t tcif_mask;
 } adc_res_t;
 
 static const adc_res_t adc_res[] = {
-    {ADC1, &RCC->APB2ENR, RCC_APB2ENR_ADC1EN},
-    {ADC2, &RCC->APB2ENR, RCC_APB2ENR_ADC2EN},
-    {ADC3, &RCC->APB2ENR, RCC_APB2ENR_ADC3EN},
+    {ADC1, &RCC->APB2ENR, RCC_APB2ENR_ADC1EN, 0, 4, DMA_HISR_TCIF4},
+    {ADC2, &RCC->APB2ENR, RCC_APB2ENR_ADC2EN, 1, 2, DMA_LISR_TCIF2},
+    {ADC3, &RCC->APB2ENR, RCC_APB2ENR_ADC3EN, 2, 1, DMA_LISR_TCIF1},
 };
 
 // Get index of ADC res
-static inline int dac_res_idx(const ADC_TypeDef *reg) {
+static inline int adc_res_idx(const ADC_TypeDef *reg) {
     for(int i = 0; i < (int)ADC_RES_COUNT; i++) {
         if(adc_res[i].reg == reg) return i;
     }
