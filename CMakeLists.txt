@@ -47,6 +47,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/TIMERS/timer.c
     Drivers/DAC/dac.c
     Drivers/ADC/adc.c
+    Drivers/I2C/i2c.c
 )
 
 # 4. Headers
@@ -59,6 +60,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/TIMERS/
     Drivers/DAC/
     Drivers/ADC/
+    Drivers/I2C/
 )
 
 # 5. Defines
