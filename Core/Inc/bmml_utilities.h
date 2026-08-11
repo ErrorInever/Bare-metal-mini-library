@@ -11,6 +11,7 @@ extern "C" {
 
 uint32_t get_apb1_clock_hz(void);
 uint32_t get_apb2_clock_hz(void);
+uint32_t bmml_calc_adc_prescaler(uint32_t apb2_hz);
 
 #ifdef __cplusplus
 }

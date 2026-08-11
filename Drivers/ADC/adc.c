@@ -4,10 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "bmml_dma_shared.h"
+#include "bmml_utilities.h"
 #include "stm32f446xx.h"
 
 #define ADC_COUNT 3
-#define ADC_DEFAULT_CHANNEL 0
 
 static adc_t adc_pool[ADC_COUNT];
 static bool adc_taken[ADC_COUNT];
@@ -53,6 +53,9 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     if(out) *out = NULL;
     if(reg == NULL || dma == NULL) return BMML_INVALID_ARG;
     if (channels == NULL || num_channels == 0 || num_channels > 6) return BMML_INVALID_ARG;
+
+    if (mode == TIME_TRIGGER) return BMML_INVALID_ARG;   // TODO: not implemented — reject before touching any resource
+    if (mode != CONTINUOUS && mode != SCAN) return BMML_INVALID_ARG; 
 
     int slot = adc_slot(reg);
     if(slot < 0) return BMML_INVALID_ARG;
@@ -115,7 +118,8 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     // ADC configure
     // Setup freq (max 18Mhz)
     ADC->CCR &= ~ADC_CCR_ADCPRE; // reset prescaler
-    ADC->CCR |= (2 << ADC_CCR_ADCPRE_Pos);
+    uint32_t adcpre = bmml_calc_adc_prescaler(get_apb2_clock_hz());
+    ADC->CCR |= (adcpre << ADC_CCR_ADCPRE_Pos);
     // Setup resolution
     adc->res->reg->CR1 &= ~ADC_CR1_RES; // max resolution 12 bit (00)
 
@@ -142,6 +146,26 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     adc->res->reg->CR2 |= ADC_CR2_ADON;
     // Enable DMA
     adc->dma.stream->CR |= DMA_SxCR_EN;
+
+    return BMML_OK;
+}
+
+bmml_status_t adc_dma_release(adc_t *adc) {
+    if(adc == NULL || adc->res == NULL) return BMML_INVALID_ARG;
+
+    int slot = adc_slot(adc->res->reg);
+    if(slot < 0) return BMML_INVALID_ARG;
+    if(!adc_taken[slot]) return BMML_INVALID_ARG;
+
+    adc->res->reg->CR2 &= ~(ADC_CR2_DMA | ADC_CR2_DDS | ADC_CR2_ADON);
+
+    if(dma_disable_stream(adc->dma.stream) != BMML_OK) return BMML_TIMEOUT;
+
+    dma_clear_stream_flags(adc->dma.res->reg, adc->dma.num_stream);
+    bmml_dma_release_stream(adc->dma.res->reg, adc->dma.num_stream);
+
+    adc_taken[slot] = false;
+    adc_pool[slot] = (adc_t){0};
 
     return BMML_OK;
 }

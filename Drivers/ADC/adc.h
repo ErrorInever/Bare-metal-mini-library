@@ -65,7 +65,7 @@ static inline void adc_start(adc_t *adc) {
     // TODO: TIME_TRIGGER
 }
 
-// TODO: add release
+bmml_status_t adc_dma_release(adc_t *adc);
 
 
 #ifdef __cplusplus
