@@ -5,6 +5,7 @@
 #include "stm32f446xx.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <assert.h>
 
 #define I2C_COUNT 3
 
@@ -81,4 +82,219 @@ bmml_status_t i2c_it_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t c
     i2c_enable(reg);
 
     return BMML_OK;
+}
+
+bmml_status_t i2c_it_release(i2c_t *i2c) {
+    if(i2c == NULL || i2c->res == NULL) return BMML_INVALID_ARG;
+
+    int slot = i2c_slot(i2c->res->reg);
+    if(slot < 0) return BMML_INVALID_ARG;
+    if(!i2c_taken[slot]) return BMML_INVALID_ARG;
+
+    i2c_reset_off(i2c->res->reg);
+    i2c->res->reg->CR2 &= ~I2C_CR2_FREQ;
+    i2c->res->reg->CCR &= ~(I2C_CCR_FS | I2C_CCR_DUTY | I2C_CCR_CCR);
+
+    i2c_taken[slot] = false;
+    i2c_pool[slot] = (i2c_t){0};
+
+    return BMML_OK;
+}
+
+bmml_status_t i2c_it_transmit(i2c_t *i2c, i2c_transaction_t *tr) {
+    if(i2c == NULL || i2c->res == NULL) return BMML_INVALID_ARG;
+
+    if(i2c->busy) return BMML_BUSY;
+
+    i2c->busy = true;
+    i2c->ctx = *tr;
+    i2c->current_ctx = tr;
+    i2c->tx_cnt = 0;
+    i2c->rx_cnt = 0;
+    i2c->retry_cnt = 0;
+    i2c->state = I2C_START;
+
+    // Enable event and error interrupt
+    i2c->res->reg->CR2 |= (I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
+    i2c->res->reg->CR1 |= I2C_CR1_START; // Start Generation
+
+    return BMML_OK;
+}
+
+
+void I2Cx_EV_IRQ_execute(int slot) {
+    assert(slot >= 0);
+
+    i2c_t *i2c = &i2c_pool[slot];
+    uint32_t sr1 = i2c->res->reg->SR1;
+
+    bool transaction_finished = false;
+    // I2C FSM
+    switch (i2c->state) {
+        case I2C_START:
+            // Start bit was generated successfull
+            if(sr1 & I2C_SR1_SB) {
+                i2c->state = I2C_ADDR; // next state
+                // reset flag and define read (0x01) or write (0x00) byte
+                uint8_t raw_bit = (i2c->ctx.tx_len > 0) ? 0x00U : 0x01U;
+                i2c->res->reg->DR = (i2c->ctx.addr << 1) | raw_bit; // FIXME: WARNING: 7 bit address (mb not need addr << 1)
+            }
+            break;
+
+        case I2C_ADDR:
+            // if address send successfull and get ACK from slave
+            if(sr1 & I2C_SR1_ADDR) {
+                (void)i2c->res->reg->SR2; // reset addr (read sr1 &sr2)
+                // if we want to send
+                if(i2c->ctx.tx_len > 0) {
+                    i2c->state = I2C_TX; // state is TX
+                    i2c->res->reg->CR2 |= I2C_CR2_ITBUFEN; // Buffer Interrupt Enable TXE
+                    i2c->res->reg->DR = i2c->ctx.tx_buff[i2c->tx_cnt++]; // Send a first byte
+                } else if(i2c->ctx.rx_len > 0) { // if we want to read
+                    i2c->state = I2C_RX; // state is RX
+                    i2c->res->reg->CR2 |= I2C_CR2_ITBUFEN; // Buffer Interrupt Enable RXNE
+                    // If we need only 1 byte, we must immediately disable ACK, in accordance with the specification.
+                    if(i2c->ctx.rx_len == 1) {
+                        i2c->res->reg->CR1 &= ~I2C_CR1_ACK;
+                        i2c->res->reg->CR1 |= I2C_CR1_STOP;
+                    } else {
+                        i2c->res->reg->CR1 |= I2C_CR1_ACK;
+                    }
+                }
+            }
+            break;
+
+        case I2C_TX:
+            // if end transfer
+            if(sr1 & I2C_SR1_BTF) {
+                if(i2c->tx_cnt >= i2c->ctx.tx_len) {
+                    if(i2c->ctx.repeated_start && i2c->ctx.rx_len > 0) {
+                        i2c->ctx.tx_len = 0; 
+                        i2c->state = I2C_START; 
+                        i2c->res->reg->CR1 |= I2C_CR1_START;
+                    } else {
+                        i2c->res->reg->CR1 |= I2C_CR1_STOP;
+                        i2c->res->reg->CR2 &= ~(I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
+                        i2c->state = I2C_DONE;
+                        i2c->busy = false;
+                        transaction_finished = true;
+                    }
+                    break;
+                }
+            }
+            // if BTF = 0 and DR is empty
+            if(sr1 & I2C_SR1_TXE) {
+                if(i2c->tx_cnt < i2c->ctx.tx_len) {
+                    i2c->res->reg->DR = i2c->ctx.tx_buff[i2c->tx_cnt++];
+                } else { 
+                    // in previous step we copy last byte and now it in shift register
+                    // just disable ITBUFFEN interrupt and wait BTF = 1
+                    i2c->res->reg->CR2 &= ~I2C_CR2_ITBUFEN;
+                }
+            }
+            break;
+
+        case I2C_RX:
+            // DR is not empty, read next byte
+            if(sr1 & I2C_SR1_RXNE) {
+                // Remaining number of bytes (including DR)
+                size_t remaining = i2c->ctx.rx_len - i2c->rx_cnt;
+                if(remaining == 2) {
+                    // If we read the penultimate byte now, the shift register
+                    // will start receiving the very last one. We must disable ACK in advance
+                    i2c->res->reg->CR1 &= ~I2C_CR1_ACK;
+                    // Also, according to the RM specification, if we want to generate a STOP 
+                    // condition immediately after the last byte, the STOP command 
+                    // can be set right now.
+                    i2c->res->reg->CR1 |= I2C_CR1_STOP;    
+                }
+                i2c->ctx.rx_buff[i2c->rx_cnt++] = i2c->res->reg->DR; // RXNE autoreset after read DR
+                // if it was the last byte stop transaction
+                if(i2c->rx_cnt >= i2c->ctx.rx_len) {
+                    i2c->res->reg->CR2 &= ~(I2C_CR2_ITBUFEN | I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
+                    i2c->state = I2C_DONE;
+                    i2c->busy = false;
+                    transaction_finished = true;
+                }
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    if(transaction_finished && i2c->callback != NULL) {
+        i2c->callback();
+    }
+}
+
+static void I2Cx_ER_IRQ_execute(int slot) {
+    assert(slot >= 0);
+
+    i2c_t *i2c = &i2c_pool[slot];
+    uint32_t sr1 = i2c->res->reg->SR1;
+
+    if (sr1 & I2C_SR1_AF) {
+        i2c->res->reg->SR1 = (uint32_t)~I2C_SR1_AF; // reset af
+        if(i2c->retry_cnt < i2c->current_ctx->max_retries) { // restart
+            i2c->retry_cnt++;
+            i2c->res->reg->CR1 |= I2C_CR1_START;
+            i2c->state = I2C_START;
+            return;
+        }
+        // TODO: NACK
+        i2c->state = I2C_ERROR;
+    }
+    else if (sr1 & I2C_SR1_BERR) {
+        // TODO: BUS ERROR
+        i2c->state = I2C_ERROR;
+        i2c->res->reg->SR1 = (uint32_t)~I2C_SR1_BERR;
+    }
+
+    i2c->res->reg->CR1 |= I2C_CR1_STOP;
+
+    for(volatile uint32_t i = 0; i < 50; i++);
+
+    i2c->res->reg->CR2 &= ~(I2C_CR2_ITEVTEN | I2C_CR2_ITBUFEN | I2C_CR2_ITERREN);
+    
+    i2c->busy = false;
+
+    if (i2c->callback != NULL) {
+        i2c->callback();
+    }
+}
+
+
+// Event interrupt handlers
+
+void I2C1_EV_IRQHandler(void) {
+    if(!i2c_taken[0]) return;
+    I2Cx_EV_IRQ_execute(0);
+}
+
+void I2C2_EV_IRQHandler(void) {
+    if(!i2c_taken[1]) return;
+    I2Cx_EV_IRQ_execute(1);
+}
+
+void I2C3_EV_IRQHandler(void) {
+    if(!i2c_taken[2]) return;
+    I2Cx_EV_IRQ_execute(2);
+}
+
+// Error interrupt handlers
+
+void I2C1_ER_IRQHandler(void) {
+    if(!i2c_taken[0]) return;
+    I2Cx_ER_IRQ_execute(0);
+}
+
+void I2C2_ER_IRQHandler(void) {
+    if(!i2c_taken[1]) return;
+    I2Cx_ER_IRQ_execute(1);
+}
+
+void I2C3_ER_IRQHandler(void) {
+    if(!i2c_taken[2]) return;
+    I2Cx_ER_IRQ_execute(2); 
 }

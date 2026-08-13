@@ -56,6 +56,7 @@ typedef struct {
     uint8_t retry_cnt;                   /**< Current iteration tally of triggered recovery retries. */
     uint16_t tx_cnt;                     /**< current tx index  */
     uint16_t rx_cnt;                     /**< current rx index */
+    bmml_status_t status;
     volatile bool busy;                  /**< is busy */
     i2c_callback_t callback;             /**< Registered user event callback triggered on completion or failure. */
 } i2c_t;
@@ -64,7 +65,7 @@ typedef struct {
 
 bmml_status_t i2c_it_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t cb, i2c_t **out);
 bmml_status_t i2c_it_release(i2c_t *i2c);
-bmml_status_t i2c_it_transmitt(i2c_t *i2c, i2c_transaction_t *tr);
+bmml_status_t i2c_it_transmit(i2c_t *i2c, i2c_transaction_t *tr);
 
 static inline void i2c_reset_off(I2C_TypeDef *reg) {
     reg->CR1 &= ~I2C_CR1_PE;
