@@ -19,7 +19,7 @@ static int i2c_slot(const I2C_TypeDef *reg) {
     return -1;
 }
 
-bmml_status_t i2c_it_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t cb, i2c_t **out) {
+bmml_status_t i2c_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t cb, i2c_t **out) {
     if(out) *out = NULL;
     if(reg == NULL) return BMML_INVALID_ARG;
     if(mode != I2C_SM_100KHZ && mode != I2C_FM_400KHZ) return BMML_INVALID_ARG;
@@ -43,9 +43,10 @@ bmml_status_t i2c_it_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t c
     i2c_reset_off(reg);
 
     // Configure freq
-    uint32_t freq = get_apb1_clock_hz();
+    uint32_t freq_mhz = get_apb1_clock_hz() / 1000000U;
+    if (freq_mhz < 2U || freq_mhz > 50U) return BMML_INVALID_ARG;
     i2c->res->reg->CR2 &= ~I2C_CR2_FREQ;
-    i2c->res->reg->CR2 |= (freq & I2C_CR2_FREQ);
+    i2c->res->reg->CR2 |= (freq_mhz & I2C_CR2_FREQ);
 
     // reset CCR & TRISE
     i2c->res->reg->CCR &= ~(I2C_CCR_FS | I2C_CCR_DUTY | I2C_CCR_CCR);
@@ -54,23 +55,23 @@ bmml_status_t i2c_it_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t c
     if(mode == I2C_SM_100KHZ) {
         // Standard Mode (100 kHz)
         // CCR = F_pclk1 / (2 * 100 000) -> multiple 1 000 000 and then devide by 1000
-        uint32_t ccr_val = (freq * 1000U) / 200U;
+        uint32_t ccr_val = (freq_mhz * 1000U) / 200U;
         if (ccr_val < 4) ccr_val = 4; // The minimum allowed value is 0x04, except when Duty = 1 (c)
         i2c->res->reg->CCR |= (ccr_val & I2C_CCR_CCR);
         // Calculate TRISE
         // TRISE = (1000ns / pclk1_mhz) + 1
-        i2c->res->reg->TRISE |= ((freq + 1U) & I2C_TRISE_TRISE);
+        i2c->res->reg->TRISE |= ((freq_mhz + 1U) & I2C_TRISE_TRISE);
     } else {
         // Fast Mode (400 kHz)
         // Enable Fast mode bit and setup DUTY = 0. t_low/t_high = 2
         i2c->res->reg->CCR |= I2C_CCR_FS;
         // For DUTY = 0: CCR = F_pclk1 / (3 * 400 000)
-        uint32_t ccr_val = (freq * 1000U) / 1200U;
+        uint32_t ccr_val = (freq_mhz * 1000U) / 1200U;
         if (ccr_val < 1) ccr_val = 1;
         i2c->res->reg->CCR |= (ccr_val & I2C_CCR_CCR);
         // TRISE: For Fast Mode max time rise 300ns
         // (300ns * F_pclk1) + 1 = (0.3 * pclk1_mhz) + 1
-        uint32_t trise_val = ((freq * 300U) / 1000U) + 1U;
+        uint32_t trise_val = ((freq_mhz * 300U) / 1000U) + 1U;
         i2c->res->reg->TRISE |= (trise_val & I2C_TRISE_TRISE);
     }
 
@@ -84,8 +85,10 @@ bmml_status_t i2c_it_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t c
     return BMML_OK;
 }
 
-bmml_status_t i2c_it_release(i2c_t *i2c) {
+bmml_status_t i2c_release(i2c_t *i2c) {
     if(i2c == NULL || i2c->res == NULL) return BMML_INVALID_ARG;
+
+    if(i2c->busy) return BMML_BUSY;
 
     int slot = i2c_slot(i2c->res->reg);
     if(slot < 0) return BMML_INVALID_ARG;
@@ -98,13 +101,31 @@ bmml_status_t i2c_it_release(i2c_t *i2c) {
     i2c_taken[slot] = false;
     i2c_pool[slot] = (i2c_t){0};
 
+    NVIC_DisableIRQ(i2c->res->irqn_ev);
+    NVIC_DisableIRQ(i2c->res->irqn_er);
+
+    if (i2c->dma_tx_acquired) {
+        if((dma_disable_stream(i2c->dma_tx.stream)) != BMML_OK) return BMML_TIMEOUT;
+        bmml_dma_release_stream(i2c->dma_tx.res->reg, i2c->dma_tx.num_stream);
+    }
+    if (i2c->dma_rx_acquired) {
+        if((dma_disable_stream(i2c->dma_rx.stream)) != BMML_OK) return BMML_TIMEOUT;
+        bmml_dma_release_stream(i2c->dma_rx.res->reg, i2c->dma_rx.num_stream);
+    }
+
     return BMML_OK;
 }
 
 bmml_status_t i2c_it_transmit(i2c_t *i2c, i2c_transaction_t *tr) {
     if(i2c == NULL || i2c->res == NULL) return BMML_INVALID_ARG;
-
     if(i2c->busy) return BMML_BUSY;
+    if (tr == NULL) return BMML_INVALID_ARG;
+    if (tr->tx_len == 0 && tr->rx_len == 0) return BMML_INVALID_ARG;
+    if (tr->tx_len > 0 && tr->tx_buff == NULL) return BMML_INVALID_ARG;
+    if (tr->rx_len > 0 && tr->rx_buff == NULL) return BMML_INVALID_ARG;
+
+    // IT transaction mode
+    i2c->xfer_mode = I2C_XFER_IT;
 
     i2c->busy = true;
     i2c->ctx = *tr;
@@ -113,10 +134,72 @@ bmml_status_t i2c_it_transmit(i2c_t *i2c, i2c_transaction_t *tr) {
     i2c->rx_cnt = 0;
     i2c->retry_cnt = 0;
     i2c->state = I2C_START;
+    i2c->status = BMML_OK;
+    i2c->hw_error = 0;
 
     // Enable event and error interrupt
     i2c->res->reg->CR2 |= (I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
     i2c->res->reg->CR1 |= I2C_CR1_START; // Start Generation
+
+    return BMML_OK;
+}
+
+bmml_status_t i2c_dma_transmit(i2c_t *i2c, i2c_transaction_t *tr) {
+    if (i2c == NULL || i2c->res == NULL) return BMML_INVALID_ARG;
+    if (i2c->busy) return BMML_BUSY;
+    if (tr == NULL) return BMML_INVALID_ARG;
+    if (tr->tx_len == 0 && tr->rx_len == 0) return BMML_INVALID_ARG;
+    if (tr->tx_len > 0 && tr->tx_buff == NULL) return BMML_INVALID_ARG;
+    if (tr->rx_len > 0 && tr->rx_buff == NULL) return BMML_INVALID_ARG; 
+    
+
+    if (!i2c->dma_tx_acquired) {
+        int dma_idx = dma_res_idx(DMA1);
+        if(dma_idx < 0) return BMML_INVALID_ARG;
+        int idx = i2c_res_idx(i2c->res->reg);
+        if(idx < 0) return BMML_INVALID_ARG;
+
+        DMA_Stream_TypeDef *dma_stream;
+        bmml_status_t st = bmml_dma_acquire_stream(DMA1, i2c_res[idx].dma_tx_stream, &dma_stream);
+        if(st != BMML_OK) return st;
+
+        i2c->dma_tx_acquired = true;
+        i2c->dma_tx.res = &dma_res[dma_idx];
+        i2c->dma_tx.stream = dma_stream;
+        i2c->dma_tx.num_stream = i2c_res[idx].dma_tx_stream;
+        i2c->dma_tx.channel = i2c_res[idx].dma_tx_channel;
+
+        *i2c->dma_tx.res->rcc_reg |= i2c->dma_tx.res->rcc_mask;
+        dma_disable_stream(i2c->dma_tx.stream);
+    }
+
+    i2c->xfer_mode = I2C_XFER_DMA;
+    i2c->busy = true;
+    i2c->ctx = *tr;
+    i2c->current_ctx = tr;
+    i2c->tx_cnt = 0;
+    i2c->rx_cnt = 0;
+    i2c->retry_cnt = 0;
+    i2c->status = BMML_OK;
+    i2c->hw_error = 0;
+    i2c->state = I2C_START;
+
+    // Setup addresses
+    // (Data Holding Register, 12-bit, Right-aligned, Channel 1
+
+    // DMA config
+    uint32_t cr = 0;
+    cr |= (i2c->dma_tx.channel << DMA_SxCR_CHSEL_Pos);          // select channel (7)
+    cr |= DMA_SxCR_MINC;                                        // increment memory
+    cr &= ~DMA_SxCR_PINC;                                       // disable peref increment
+    cr |= (1U << DMA_SxCR_DIR_Pos);                             // direction M2P
+    cr |= DMA_SxCR_TCIE;                                        // enable interrupt Transmit complete
+    cr |= DMA_SxCR_TEIE;                                        // enable interrupt Transport error
+    i2c->dma_tx.stream->CR = cr;
+
+
+    i2c->res->reg->CR2 |= (I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
+    i2c->res->reg->CR1 |= I2C_CR1_START;
 
     return BMML_OK;
 }
@@ -148,17 +231,44 @@ void I2Cx_EV_IRQ_execute(int slot) {
                 // if we want to send
                 if(i2c->ctx.tx_len > 0) {
                     i2c->state = I2C_TX; // state is TX
-                    i2c->res->reg->CR2 |= I2C_CR2_ITBUFEN; // Buffer Interrupt Enable TXE
-                    i2c->res->reg->DR = i2c->ctx.tx_buff[i2c->tx_cnt++]; // Send a first byte
+                    // If mode is DMA
+                    if(i2c->xfer_mode == I2C_XFER_DMA) {
+                        //configure and enable DMA TX-stream (PAR=&DR, M0AR=tx_buff, NDTR=tx_len)
+                        i2c->dma_tx.stream->PAR = (uint32_t)&i2c->res->reg->DR;
+                        i2c->dma_tx.stream->M0AR = (uint32_t)i2c->ctx.tx_buff;
+                        i2c->dma_tx.stream->NDTR = i2c->ctx.tx_len;
+                        i2c->res->reg->CR2 |= I2C_CR2_DMAEN;
+                        i2c->dma_tx.stream->CR |= DMA_SxCR_EN;
+                    } else {  // if mode is IT
+                        i2c->res->reg->CR2 |= I2C_CR2_ITBUFEN; // Buffer Interrupt Enable TXE
+                        i2c->res->reg->DR = i2c->ctx.tx_buff[i2c->tx_cnt++]; // Send a first byte
+                    }
                 } else if(i2c->ctx.rx_len > 0) { // if we want to read
                     i2c->state = I2C_RX; // state is RX
-                    i2c->res->reg->CR2 |= I2C_CR2_ITBUFEN; // Buffer Interrupt Enable RXNE
-                    // If we need only 1 byte, we must immediately disable ACK, in accordance with the specification.
-                    if(i2c->ctx.rx_len == 1) {
-                        i2c->res->reg->CR1 &= ~I2C_CR1_ACK;
-                        i2c->res->reg->CR1 |= I2C_CR1_STOP;
-                    } else {
-                        i2c->res->reg->CR1 |= I2C_CR1_ACK;
+                    // If mode is DMA
+                    if(i2c->xfer_mode == I2C_XFER_DMA) {
+
+                        i2c->dma_rx.stream->PAR = (uint32_t)i2c->ctx.rx_buff;
+                        i2c->dma_rx.stream->M0AR = (uint32_t)&i2c->res->reg->DR;
+                        i2c->dma_rx.stream->NDTR = i2c->ctx.rx_len;
+
+                        if(i2c->ctx.rx_len == 1) {
+                            i2c->res->reg->CR1 &= ~I2C_CR1_ACK;
+                        } else {
+                            i2c->res->reg->CR2 |= I2C_CR2_LAST;   // last DMA-byte need NACK
+                            i2c->res->reg->CR1 |= I2C_CR1_ACK;
+                        }
+                        i2c->res->reg->CR2 |= I2C_CR2_DMAEN;
+                        i2c->dma_rx.stream->CR |= DMA_SxCR_EN;
+                    } else { // if mode is IT
+                        i2c->res->reg->CR2 |= I2C_CR2_ITBUFEN; // Buffer Interrupt Enable RXNE
+                        // If we need only 1 byte, we must immediately disable ACK, in accordance with the specification.
+                        if(i2c->ctx.rx_len == 1) {
+                            i2c->res->reg->CR1 &= ~I2C_CR1_ACK;
+                            i2c->res->reg->CR1 |= I2C_CR1_STOP;
+                        } else {
+                            i2c->res->reg->CR1 |= I2C_CR1_ACK;
+                        }
                     }
                 }
             }
@@ -176,6 +286,7 @@ void I2Cx_EV_IRQ_execute(int slot) {
                         i2c->res->reg->CR1 |= I2C_CR1_STOP;
                         i2c->res->reg->CR2 &= ~(I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
                         i2c->state = I2C_DONE;
+                        i2c->status = BMML_OK;
                         i2c->busy = false;
                         transaction_finished = true;
                     }
@@ -213,6 +324,7 @@ void I2Cx_EV_IRQ_execute(int slot) {
                 if(i2c->rx_cnt >= i2c->ctx.rx_len) {
                     i2c->res->reg->CR2 &= ~(I2C_CR2_ITBUFEN | I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
                     i2c->state = I2C_DONE;
+                    i2c->status = BMML_OK;
                     i2c->busy = false;
                     transaction_finished = true;
                 }
@@ -224,7 +336,7 @@ void I2Cx_EV_IRQ_execute(int slot) {
     }
 
     if(transaction_finished && i2c->callback != NULL) {
-        i2c->callback();
+        i2c->callback(i2c);
     }
 }
 
@@ -242,13 +354,15 @@ static void I2Cx_ER_IRQ_execute(int slot) {
             i2c->state = I2C_START;
             return;
         }
-        // TODO: NACK
         i2c->state = I2C_ERROR;
+        i2c->status = BMML_ERROR;
+        i2c->hw_error = I2C_SR1_AF; // Acknowledge Failure
     }
     else if (sr1 & I2C_SR1_BERR) {
-        // TODO: BUS ERROR
         i2c->state = I2C_ERROR;
         i2c->res->reg->SR1 = (uint32_t)~I2C_SR1_BERR;
+        i2c->status = BMML_ERROR;
+        i2c->hw_error = I2C_SR1_BERR;   // BUS ERROR
     }
 
     i2c->res->reg->CR1 |= I2C_CR1_STOP;
@@ -260,7 +374,7 @@ static void I2Cx_ER_IRQ_execute(int slot) {
     i2c->busy = false;
 
     if (i2c->callback != NULL) {
-        i2c->callback();
+        i2c->callback(i2c);
     }
 }
 

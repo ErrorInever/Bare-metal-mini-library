@@ -96,12 +96,6 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     dma_disable_stream(adc->dma.stream);
     dma_clear_stream_flags(adc->dma.res->reg, adc->dma.num_stream);
 
-    // Setup addresses
-    // (Data Holding Register, 12-bit, Right-aligned, Channel 1
-    adc->dma.stream->PAR = (uint32_t)&adc->res->reg->DR;            // from DR
-    adc->dma.stream->M0AR = (uint32_t)adc->data_buffer;             // to buffer
-    adc->dma.stream->NDTR = adc->num_channels;
-
     // DMA config
     uint32_t cr = 0;
     cr |= (adc->dma.channel << DMA_SxCR_CHSEL_Pos);             // select channel (7)

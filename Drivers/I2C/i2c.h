@@ -1,9 +1,21 @@
+#ifndef I2C_H
+#define I2C_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #include "bmml_res_i2c.h"
 #include "bmml_status.h"
 #include "bmml_dma_shared.h"
 #include "stm32f446xx.h"
 #include <stdint.h>
 #include <stdio.h>
+
+
+struct i2c_t;
+typedef struct i2c_t i2c_t;
 
 /** * @enum i2c_state_t
  * @brief Finite State Machine (FSM) positions for non-blocking interrupt tracking.
@@ -40,32 +52,37 @@ typedef struct {
     uint8_t max_retries;    /**< Max number of automatic transmission restarts if the hardware receives a NACK. */
 } i2c_transaction_t;
 
-/**
- * @brief User Callback routine signature for background reporting of completed operations.
- * @param[in] status Final operational verdict of the transaction pipeline (e.g., I2C_OK, I2C_NACK).
- */
-typedef void (*i2c_callback_t)(void);
+typedef enum { I2C_XFER_IT, I2C_XFER_DMA } i2c_xfer_mode_t;
 
-typedef struct {
+typedef void (*i2c_callback_t)(i2c_t *i2c);
+
+typedef struct i2c_t {
     const i2c_res_t *res;
-    dma_t dma;
+    dma_t dma_tx;                        /**< DMA stream for TX */
+    dma_t dma_rx;                        /**< DMA stream for RX */
+    bool dma_tx_acquired;
+    bool dma_rx_acquired;
     volatile i2c_state_t state;          /**< Volatile FSM tracking state evaluated within ISRs. */
-    volatile uint32_t hw_error;          /**< Asynchronous transaction result status latch: NACK, overrun, arbitration lost, etc. */
+    volatile bmml_status_t status;
+    i2c_xfer_mode_t xfer_mode;          // which path in current transaction
+    volatile uint32_t hw_error;
     i2c_transaction_t ctx;               /**< Internal clone layout of the active operational context. */
     i2c_transaction_t *current_ctx;      /**< Persistent master handle reference pointer used for retry setups. */
     uint8_t retry_cnt;                   /**< Current iteration tally of triggered recovery retries. */
     uint16_t tx_cnt;                     /**< current tx index  */
     uint16_t rx_cnt;                     /**< current rx index */
-    bmml_status_t status;
-    volatile bool busy;                  /**< is busy */
+    volatile bool busy;                  /**< busy flag */
     i2c_callback_t callback;             /**< Registered user event callback triggered on completion or failure. */
 } i2c_t;
 
 
 
-bmml_status_t i2c_it_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t cb, i2c_t **out);
-bmml_status_t i2c_it_release(i2c_t *i2c);
+bmml_status_t i2c_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t cb, i2c_t **out);
+bmml_status_t i2c_release(i2c_t *i2c);
 bmml_status_t i2c_it_transmit(i2c_t *i2c, i2c_transaction_t *tr);
+
+bmml_status_t i2c_dma_transmit(i2c_t *i2c, i2c_transaction_t *tr);
+bmml_status_t i2c_dma_receive(i2c_t *i2c, i2c_transaction_t *tr);
 
 static inline void i2c_reset_off(I2C_TypeDef *reg) {
     reg->CR1 &= ~I2C_CR1_PE;
@@ -74,3 +91,13 @@ static inline void i2c_reset_off(I2C_TypeDef *reg) {
 static inline void i2c_enable(I2C_TypeDef *reg) {
     reg->CR1 |= I2C_CR1_PE;
 }
+
+
+
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif /* I2C_H */
