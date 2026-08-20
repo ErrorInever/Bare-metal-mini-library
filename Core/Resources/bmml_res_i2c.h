@@ -21,12 +21,14 @@ typedef struct {
     uint32_t dma_tx_channel;
     uint8_t  dma_rx_stream;   // RX 
     uint32_t dma_rx_channel;
+    uint32_t tx_tcif_mask;
+    uint32_t rx_tcif_mask;
 } i2c_res_t;
 
 static const i2c_res_t i2c_res[] = {
-    {I2C1, &RCC->APB1ENR, RCC_APB1ENR_I2C1EN, I2C1_EV_IRQn, I2C1_ER_IRQn, 6, 1, 0, 1},
-    {I2C2, &RCC->APB1ENR, RCC_APB1ENR_I2C2EN, I2C2_EV_IRQn, I2C2_ER_IRQn, 7, 7, 2, 7},
-    {I2C3, &RCC->APB1ENR, RCC_APB1ENR_I2C3EN, I2C3_EV_IRQn, I2C3_ER_IRQn, 4, 3, 2, 3},
+    {I2C1, &RCC->APB1ENR, RCC_APB1ENR_I2C1EN, I2C1_EV_IRQn, I2C1_ER_IRQn, 6, 1, 0, 1, DMA_HISR_TCIF6, DMA_LISR_TCIF0},
+    {I2C2, &RCC->APB1ENR, RCC_APB1ENR_I2C2EN, I2C2_EV_IRQn, I2C2_ER_IRQn, 7, 7, 2, 7, DMA_HISR_TCIF7, DMA_LISR_TCIF2},
+    {I2C3, &RCC->APB1ENR, RCC_APB1ENR_I2C3EN, I2C3_EV_IRQn, I2C3_ER_IRQn, 4, 3, 2, 3, DMA_HISR_TCIF4, DMA_LISR_TCIF2},
 };
 
 // Get index of I2C res
