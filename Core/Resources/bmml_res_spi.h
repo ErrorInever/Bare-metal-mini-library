@@ -9,7 +9,6 @@ extern "C" {
 #include <stdint.h>
 #include "stm32f446xx.h"
 
-#define SPI_RES_COUNT 3
 
 typedef struct {
     SPI_TypeDef *reg;
@@ -40,13 +39,6 @@ static const spi_res_t spi_res[] = {
       5, 0,   0, 0,                       // TX: stream5 ch0   RX: stream0 ch0
       DMA_HISR_TCIF5, DMA_LISR_TCIF0 },
 };
-
-static inline int spi_res_idx(const SPI_TypeDef *reg) {
-    for (int i = 0; i < SPI_RES_COUNT; i++) {
-        if (spi_res[i].reg == reg) return i;
-    }
-    return -1;
-}
 
 #ifdef __cplusplus
 }
