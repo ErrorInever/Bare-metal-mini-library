@@ -40,13 +40,14 @@ bmml_status_t dac_dma_acquire(DAC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     
     // Acquire DMA stream
     DMA_Stream_TypeDef *dma_stream;
-    bmml_status_t dma_status = bmml_dma_acquire_stream(dma, stream, &dma_stream);
-    if(dma_status != BMML_OK) return dma_status;
+    bmml_status_t st = bmml_dma_acquire_stream(dma, stream, NULL, NULL, &dma_stream);
+    if(st != BMML_OK) return st;
     // Acquire TIM6 timer
     timer_basic_t *timer;
     bmml_status_t tmr_status = timer_basic_acquire(TIM6, 100, NULL, &timer);
     if(tmr_status != BMML_OK) {
         bmml_dma_release_stream(dma, stream);
+        return tmr_status;
     }
 
     dac_taken[slot] = true;

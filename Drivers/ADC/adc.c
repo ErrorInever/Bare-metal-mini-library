@@ -9,6 +9,8 @@
 
 #define ADC_COUNT 3
 
+static void adc_dma_isr(void *ctx);
+
 static adc_t adc_pool[ADC_COUNT];
 static bool adc_taken[ADC_COUNT];
 
@@ -71,8 +73,8 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
 
     // Acquire DMA stream
     DMA_Stream_TypeDef *dma_stream;
-    bmml_status_t dma_status = bmml_dma_acquire_stream(dma, stream, &dma_stream);
-    if(dma_status != BMML_OK) return dma_status;
+    bmml_status_t st = bmml_dma_acquire_stream(dma, stream, adc_dma_isr, NULL, &dma_stream);
+    if(st != BMML_OK) return st;
 
     // Init
     adc_taken[slot] = true;
@@ -164,30 +166,20 @@ bmml_status_t adc_dma_release(adc_t *adc) {
     return BMML_OK;
 }
 
-void ADC_DMAx_IRQHandler(uint8_t idx) {
-    if(!adc_taken[idx]) return;
-    adc_t *adc = &adc_pool[idx];
-    // Stream 1-2 in LIFCR/LISR
-    if(adc->dma.stream == DMA2_Stream1 || adc->dma.stream == DMA2_Stream2) {
-        if(adc->dma.res->reg->LISR & adc->res->tcif_mask) {
-            adc->dma.res->reg->LISR = adc->res->tcif_mask;
-            if(adc->callback != NULL) {
-                adc->callback(adc);
-            }
-        }
+static void adc_dma_isr(void *ctx) {
+    adc_t *adc = (adc_t *)ctx;
+
+    volatile uint32_t *isr  = (adc->dma.num_stream <= 3) ? &adc->dma.res->reg->LISR  : &adc->dma.res->reg->HISR;
+    volatile uint32_t *ifcr = (adc->dma.num_stream <= 3) ? &adc->dma.res->reg->LIFCR : &adc->dma.res->reg->HIFCR;
+    uint32_t teif = adc->res->tcif_mask >> 2;
+
+    if(*isr & teif) {
+        *ifcr = teif;
+        if(adc->callback != NULL) adc->callback(adc);
+        return;
     }
-    // Stream 4 in HIFCR/HISR
-    if(adc->dma.stream == DMA2_Stream4) {
-        if(adc->dma.res->reg->HISR & adc->res->tcif_mask) {
-            adc->dma.res->reg->HIFCR = adc->res->tcif_mask;
-            if(adc->callback != NULL) {
-                adc->callback(adc);
-            }
-        }
+    if(*isr & adc->res->tcif_mask) {
+        *ifcr = adc->res->tcif_mask;
+        if(adc->callback != NULL) adc->callback(adc);
     }
 }
-
-
-void DMA2_Stream1_IRQHandler(void) { ADC_DMAx_IRQHandler(2); }      // ADC3  
-void DMA2_Stream2_IRQHandler(void) { ADC_DMAx_IRQHandler(1); }      // ADC2
-void DMA2_Stream4_IRQHandler(void) { ADC_DMAx_IRQHandler(0); }      // ADC1

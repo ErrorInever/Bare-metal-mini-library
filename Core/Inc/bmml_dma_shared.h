@@ -13,6 +13,9 @@ extern "C" {
 
 #define DMA_STREAM_COUNT 8
 
+// callback for DMA with context
+typedef void (*dma_stream_cb_t)(void *ctx);
+
 typedef struct {
     DMA_TypeDef *reg;
     volatile uint32_t *rcc_reg;
@@ -56,7 +59,7 @@ static inline void dma_clear_stream_flags(DMA_TypeDef *dma, uint8_t stream) {
     else dma->HIFCR = mask;
 }
 
-bmml_status_t bmml_dma_acquire_stream(DMA_TypeDef *dma, uint8_t stream, DMA_Stream_TypeDef **out_stream);
+bmml_status_t bmml_dma_acquire_stream(DMA_TypeDef *dma, uint8_t stream, dma_stream_cb_t cb, void *ctx, DMA_Stream_TypeDef **out_stream);
 bmml_status_t bmml_dma_release_stream(DMA_TypeDef *dma, uint8_t stream);
 
 

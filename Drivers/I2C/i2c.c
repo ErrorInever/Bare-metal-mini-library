@@ -10,6 +10,9 @@
 
 #define I2C_COUNT 3
 
+static void i2c_dma_tx_isr(void *ctx);
+static void i2c_dma_rx_isr(void *ctx);
+
 static i2c_t i2c_pool[I2C_COUNT];
 static bool i2c_taken[I2C_COUNT];
 
@@ -81,12 +84,6 @@ bmml_status_t i2c_acquire(I2C_TypeDef *reg, i2c_mode_t mode, i2c_callback_t cb, 
     NVIC_SetPriority(i2c->res->irqn_ev, 5);
     NVIC_EnableIRQ(i2c->res->irqn_er);
     NVIC_SetPriority(i2c->res->irqn_er, 5);
-    // Enable streams
-    NVIC_EnableIRQ(DMA1_Stream0_IRQn);
-    NVIC_EnableIRQ(DMA1_Stream2_IRQn);
-    NVIC_EnableIRQ(DMA1_Stream4_IRQn);
-    NVIC_EnableIRQ(DMA1_Stream6_IRQn);
-    NVIC_EnableIRQ(DMA1_Stream7_IRQn);
 
 
     i2c_enable(reg);
@@ -112,12 +109,6 @@ bmml_status_t i2c_release(i2c_t *i2c) {
 
     NVIC_DisableIRQ(i2c->res->irqn_ev);
     NVIC_DisableIRQ(i2c->res->irqn_er);
-
-    NVIC_DisableIRQ(DMA1_Stream0_IRQn);
-    NVIC_DisableIRQ(DMA1_Stream2_IRQn);
-    NVIC_DisableIRQ(DMA1_Stream4_IRQn);
-    NVIC_DisableIRQ(DMA1_Stream6_IRQn);
-    NVIC_DisableIRQ(DMA1_Stream7_IRQn);
 
     if (i2c->dma_tx_acquired) {
         if((dma_disable_stream(i2c->dma_tx.stream)) != BMML_OK) return BMML_TIMEOUT;
@@ -177,7 +168,7 @@ bmml_status_t i2c_dma_transmit(i2c_t *i2c, i2c_transaction_t *tr) {
         if(idx < 0) return BMML_INVALID_ARG;
 
         DMA_Stream_TypeDef *dma_stream;
-        bmml_status_t st = bmml_dma_acquire_stream(DMA1, i2c_res[idx].dma_tx_stream, &dma_stream);
+        bmml_status_t st = bmml_dma_acquire_stream(DMA1, i2c_res[idx].dma_tx_stream, i2c_dma_tx_isr, i2c, &dma_stream);
         if(st != BMML_OK) return st;
 
         i2c->dma_tx_acquired = true;
@@ -198,7 +189,7 @@ bmml_status_t i2c_dma_transmit(i2c_t *i2c, i2c_transaction_t *tr) {
         if(idx < 0) return BMML_INVALID_ARG;
 
         DMA_Stream_TypeDef *dma_stream;
-        bmml_status_t st = bmml_dma_acquire_stream(DMA1, i2c_res[idx].dma_rx_stream, &dma_stream);
+        bmml_status_t st = bmml_dma_acquire_stream(DMA1, i2c_res[idx].dma_rx_stream, i2c_dma_rx_isr, i2c, &dma_stream);
         if(st != BMML_OK) return st;
 
         i2c->dma_rx_acquired = true;
@@ -266,7 +257,7 @@ bmml_status_t i2c_dma_receive(i2c_t *i2c, i2c_transaction_t *tr) {
         if(idx < 0) return BMML_INVALID_ARG;
 
         DMA_Stream_TypeDef *dma_stream;
-        bmml_status_t st = bmml_dma_acquire_stream(DMA1, i2c_res[idx].dma_rx_stream, &dma_stream);
+        bmml_status_t st = bmml_dma_acquire_stream(DMA1, i2c_res[idx].dma_rx_stream, i2c_dma_rx_isr, i2c, &dma_stream);
         if(st != BMML_OK) return st;
 
         i2c->dma_rx_acquired = true;
@@ -582,69 +573,32 @@ static void DMA_error(i2c_t *i2c, dma_t *d, uint32_t teif_mask) {
 }
 
 
-static void DMA1_StreamX_IRQHandler(i2c_t *i2c) {
-    if(i2c->dma_tx_acquired) {
-        uint32_t teif = dma_teif_mask(i2c->res->tx_tcif_mask);
-        if(dma_check_flag(&i2c->dma_tx, teif, false)) {
-            DMA_error(i2c, &i2c->dma_tx, teif);
-            if(i2c->callback != NULL) i2c->callback(i2c);
-            return;
-        }
-        if(dma_check_flag(&i2c->dma_tx, i2c->res->tx_tcif_mask, true)) {
-            DMA_tx_complete(i2c);
-            if(i2c->callback != NULL) i2c->callback(i2c);
-            return;
-        }
+static void i2c_dma_tx_isr(void *ctx) {
+    i2c_t *i2c = (i2c_t *)ctx;
+    uint32_t teif = dma_teif_mask(i2c->res->tx_tcif_mask);
+
+    if(dma_check_flag(&i2c->dma_tx, teif, false)) {
+        DMA_error(i2c, &i2c->dma_tx, teif);
+    } else if(dma_check_flag(&i2c->dma_tx, i2c->res->tx_tcif_mask, true)) {
+        DMA_tx_complete(i2c);
+    } else {
+        return;
     }
-    if(i2c->dma_rx_acquired) {
-        uint32_t teif = dma_teif_mask(i2c->res->rx_tcif_mask);
-        if(dma_check_flag(&i2c->dma_rx, teif, false)) {
-            DMA_error(i2c, &i2c->dma_rx, teif);
-            if(i2c->callback != NULL) i2c->callback(i2c);
-            return;
-        }
-        if(dma_check_flag(&i2c->dma_rx, i2c->res->rx_tcif_mask, true)) {
-            DMA_rx_complete(i2c);
-            if(i2c->callback != NULL) i2c->callback(i2c);
-            return;
-        }
+    if(i2c->callback != NULL) i2c->callback(i2c);
+}
+
+static void i2c_dma_rx_isr(void *ctx) {
+    i2c_t *i2c = (i2c_t *)ctx;
+    uint32_t teif = dma_teif_mask(i2c->res->rx_tcif_mask);
+
+    if(dma_check_flag(&i2c->dma_rx, teif, false)) {
+        DMA_error(i2c, &i2c->dma_rx, teif);
+    } else if(dma_check_flag(&i2c->dma_rx, i2c->res->rx_tcif_mask, true)) {
+        DMA_rx_complete(i2c);
+    } else {
+        return;
     }
+    if(i2c->callback != NULL) i2c->callback(i2c);
 }
-
-// I2C1 TX
-void DMA1_Stream6_IRQHandler(void) {
-    if(!i2c_taken[0]) return;
-    DMA1_StreamX_IRQHandler(&i2c_pool[0]);
-}
-
-// I2C1 RX
-void DMA1_Stream0_IRQHandler(void) {  
-    if(!i2c_taken[0]) return;
-    DMA1_StreamX_IRQHandler(&i2c_pool[0]);
-}
-
-
-// I2C2 TX
-void DMA1_Stream7_IRQHandler(void) {
-    if(!i2c_taken[1]) return;
-    DMA1_StreamX_IRQHandler(&i2c_pool[1]);
-
-}
-
-// I2C2 and I2C3 RX
-void DMA1_Stream2_IRQHandler(void) {
-    if(i2c_taken[1] && i2c_pool[1].dma_rx_acquired) {
-        DMA1_StreamX_IRQHandler(&i2c_pool[1]);
-    } else if(i2c_taken[2] && i2c_pool[2].dma_rx_acquired) {
-        DMA1_StreamX_IRQHandler(&i2c_pool[2]);
-    }
-}
-
-// I2C3 TX
-void DMA1_Stream4_IRQHandler(void) {
-    if(!i2c_taken[2]) return;
-    DMA1_StreamX_IRQHandler(&i2c_pool[2]);
-}
-
 
 
