@@ -14,9 +14,9 @@ extern "C" {
 typedef struct {
     ADC_TypeDef *reg;
     volatile uint32_t *rcc_reg;
+    uint32_t rcc_mask;
     uint32_t dma_channel; // DMA channel select for DMA2 (0/1/2 for ADC1/2/3)
     uint8_t dma_stream;
-    uint32_t rcc_mask;
     uint32_t tcif_mask;
 } adc_res_t;
 
