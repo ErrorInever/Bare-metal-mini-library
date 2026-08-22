@@ -2,6 +2,7 @@
 #define BMML_SPI_H
 
 
+#include "stm32f446xx.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,18 +38,6 @@ typedef enum {
 } spi_baudrate_t;
 
 /**
- * @enum spi_state_t
- * @brief Internal state machine statuses for tracking the ongoing bus operations.
- */
-typedef enum {
-    SPI_READY,          /**< Bus is idle and ready for a new transaction. */
-    SPI_BUSY_TX,        /**< Transmit-only operation is in progress. */
-    SPI_BUSY_RX,        /**< Receive-only operation is in progress (sending dummy bytes). */
-    SPI_BUSY_TX_RX,     /**< Full-duplex bidirectional exchange is in progress. */
-    SPI_ERROR           /**< Peripheral error occurred, blocking operations. */
-} spi_state_t;
-
-/**
  * @brief Asynchronous completion callback type definition.
  * * @param spi Pointer to the SPI handle managing the operation.
  */
@@ -72,7 +61,6 @@ typedef struct spi_t {
     dma_t dma_rx;                        /**< DMA stream for RX */
     bool dma_tx_acquired;
     bool dma_rx_acquired;
-    volatile spi_state_t state;
     volatile bmml_status_t status;
     volatile uint32_t hw_error;
 
@@ -84,13 +72,27 @@ typedef struct spi_t {
 
     volatile spi_transaction_t ctx;
     volatile spi_transaction_t *current_ctx;
+    bool busy;
+    spi_callback_t callback;
 
 } spi_t;
 
-bmml_status_t spi_acquire();
+bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb);
 bmml_status_t spi_release();
-bmml_status_t spi_it_transmit();
-bmml_status_t spi_dma_transmit();
+bmml_status_t spi_it_transmit(spi_t *spi, spi_transaction_t *tr);
+bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr);
+
+static inline void spi_reset(SPI_TypeDef *reg) {
+    reg->CR1 = 0U;
+}
+
+static inline void spi_enable(SPI_TypeDef *reg) {
+    reg->CR1 |= SPI_CR1_SPE;
+}
+
+static inline void spi_reset_flags(SPI_TypeDef *reg) {
+    reg->CR2 &= ~(SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE);
+}
 
 
 #ifdef __cplusplus
