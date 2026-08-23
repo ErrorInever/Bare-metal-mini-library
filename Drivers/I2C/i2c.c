@@ -104,9 +104,6 @@ bmml_status_t i2c_release(i2c_t *i2c) {
     i2c->res->reg->CR2 &= ~I2C_CR2_FREQ;
     i2c->res->reg->CCR &= ~(I2C_CCR_FS | I2C_CCR_DUTY | I2C_CCR_CCR);
 
-    i2c_taken[slot] = false;
-    i2c_pool[slot] = (i2c_t){0};
-
     NVIC_DisableIRQ(i2c->res->irqn_ev);
     NVIC_DisableIRQ(i2c->res->irqn_er);
 
@@ -120,6 +117,9 @@ bmml_status_t i2c_release(i2c_t *i2c) {
         bmml_dma_release_stream(i2c->dma_rx.res->reg, i2c->dma_rx.num_stream);
         dma_clear_stream_flags(i2c->dma_rx.res->reg, i2c->dma_rx.num_stream);
     }
+
+    i2c_taken[slot] = false;
+    i2c_pool[slot] = (i2c_t){0};
 
     return BMML_OK;
 }
