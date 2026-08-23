@@ -546,20 +546,6 @@ static void DMA_rx_complete(i2c_t *i2c) {
     DMA_finish(i2c);
 }
 
-static inline uint32_t dma_teif_mask(uint32_t tcif_mask) {
-    return tcif_mask >> 2;
-}
-
-static bool dma_check_flag(dma_t *d, uint32_t mask, bool clear) {
-    volatile uint32_t *isr  = (d->num_stream <= 3) ? &d->res->reg->LISR : &d->res->reg->HISR;
-    volatile uint32_t *ifcr = (d->num_stream <= 3) ? &d->res->reg->LIFCR : &d->res->reg->HIFCR;
-    if (*isr & mask) {
-        if (clear) *ifcr = mask;
-        return true;
-    }
-    return false;
-}
-
 static void DMA_error(i2c_t *i2c, dma_t *d, uint32_t teif_mask) {
     dma_check_flag(d, teif_mask, true); 
     d->stream->CR &= ~DMA_SxCR_EN; 

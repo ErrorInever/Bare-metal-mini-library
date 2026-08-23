@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define SPI_COUNT 3
+#define SPI_COUNT 4
 
 // for DMA dummy
 static uint8_t dma_dummy_tx = 0xFF;
@@ -23,6 +23,7 @@ static int spi_slot(const SPI_TypeDef *reg) {
     if(reg == SPI1) return 0;
     if(reg == SPI2) return 1;
     if(reg == SPI3) return 2;
+    if(reg == SPI4) return 3;
     return -1;
 }
 
@@ -59,6 +60,35 @@ bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb
     NVIC_SetPriority(spi->res->spi_irq, 5);
 
     spi_enable(reg);
+
+    return BMML_OK;
+}
+
+bmml_status_t spi_release(spi_t *spi) {
+    if(spi == NULL) return BMML_INVALID_ARG;
+    if(spi->busy) return BMML_BUSY;
+
+    int slot = spi_slot(spi->res->reg);
+    if(slot < 0) return BMML_INVALID_ARG;
+    if(!spi_taken[slot]) return BMML_INVALID_ARG;
+
+    spi_reset(spi->res->reg); // disable SPI module
+    spi->res->reg->CR2 &= ~(SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE);
+    spi_taken[slot] = false;
+    spi_pool[slot] = (spi_t){0};
+
+    NVIC_DisableIRQ(spi->res->spi_irq);
+
+    if(spi->dma_tx_acquired) {
+        if((dma_disable_stream(spi->dma_tx.stream)) != BMML_OK) return BMML_TIMEOUT;
+        bmml_dma_release_stream(spi->dma_tx.res->reg, spi->dma_tx.num_stream);
+        dma_clear_stream_flags(spi->dma_tx.res->reg, spi->dma_tx.num_stream);
+    }
+    if(spi->dma_rx_acquired) {
+        if((dma_disable_stream(spi->dma_rx.stream)) != BMML_OK) return BMML_TIMEOUT;
+        bmml_dma_release_stream(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
+        dma_clear_stream_flags(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
+    }
 
     return BMML_OK;
 }
@@ -203,4 +233,152 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
     spi->res->reg->CR2 |=(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN);
 
     return BMML_OK;
+}
+
+
+static void DMA_error(spi_t *spi, dma_t *d, uint32_t teif_mask) {
+    dma_check_flag(d, teif_mask, true); 
+    d->stream->CR &= ~DMA_SxCR_EN; 
+    while (d->stream->CR & DMA_SxCR_EN) { } 
+    spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
+    spi->status  = BMML_ERROR;
+    spi->hw_error = teif_mask;
+    spi->busy    = false;
+}
+
+static void DMA_finish(spi_t *spi) {
+    spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
+    spi->status = BMML_OK;
+    spi->busy   = false;
+}
+
+static void DMA_tx_complete(spi_t *spi) {
+    spi->res->reg->CR2 &= ~SPI_CR2_TXDMAEN;
+    spi->ctx.tx_len = 0;
+    DMA_finish(spi);
+}
+
+static void spi_dma_tx_isr(void *ctx) {
+    spi_t *spi = (spi_t *)ctx;
+    uint32_t teif = dma_teif_mask(spi->res->tx_tcif_mask);
+    if(dma_check_flag(&spi->dma_tx, teif, false)) {
+        DMA_error(spi, &spi->dma_tx, teif);
+    } else if(dma_check_flag(&spi->dma_tx, spi->res->tx_tcif_mask, true)) {
+        DMA_tx_complete(spi);
+    } else {
+        return;
+    }
+    if(spi->callback != NULL) spi->callback(spi);
+}
+static void spi_dma_rx_isr(void *ctx) {
+    spi_t *spi = (spi_t *)ctx;
+    uint32_t teif = dma_teif_mask(spi->res->rx_tcif_mask);
+    if(dma_check_flag(&spi->dma_rx, teif, false)) {
+        DMA_error(spi, &spi->dma_rx, teif);
+    } else if(dma_check_flag(&spi->dma_rx, spi->res->rx_tcif_mask, true)) {
+        DMA_tx_complete(spi);
+    } else {
+        return;
+    }
+    if(spi->callback != NULL) spi->callback(spi);
+}
+
+// IT and Errors
+static void SPIx_IRQHandler(int slot) {
+    spi_t *spi = &spi_pool[slot];
+    uint32_t sr = spi->res->reg->SR;
+    uint32_t cr2 = spi->res->reg->CR2;
+
+    // check errors
+    if(cr2 & SPI_CR2_ERRIE) {
+        // Overrun
+        if(sr & SPI_SR_OVR) {
+            // reset OVR
+            (void)spi->res->reg->DR;
+            (void)spi->res->reg->SR;
+            spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
+            spi->status = BMML_ERROR;
+            spi->hw_error = SPI_SR_OVR;
+            spi->busy = false;
+            if(spi->callback != NULL) spi->callback(spi);
+        }
+        // mode fault
+        if(sr & SPI_SR_MODF) {
+            spi->res->reg->CR1 &= ~SPI_CR1_SPE;
+            spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
+            spi->status = BMML_ERROR;
+            spi->hw_error = SPI_SR_MODF;
+            spi->busy = false;
+            if(spi->callback != NULL) spi->callback(spi);
+        }
+    }
+    // RXNE
+    if((sr & SPI_SR_RXNE) && (cr2 & SPI_CR2_RXNEIE)) {
+        if(spi->rx_cnt > 0) { // if have anything to read
+            if(spi->p_rx_ptr != NULL) { // if we read (rx mode)
+                *spi->p_rx_ptr = spi->res->reg->DR;
+                spi->p_rx_ptr++;
+            } else { // if we just send (tx mode) we must read from DR
+                volatile uint8_t dummy = spi->res->reg->DR;
+                (void)dummy;
+            }
+            spi->rx_cnt--;
+
+            // (mode RX) enable TXEIE for send dummy byte
+            if(spi->rx_cnt > 0) spi->res->reg->CR2 |= SPI_CR2_TXEIE;
+        }
+    }
+
+    // TXE
+    if((sr & SPI_SR_TXE) && (cr2 & SPI_CR2_TXEIE)) {
+        if(spi->tx_cnt > 0) { // if have anything to read
+            if(spi->p_tx_ptr != NULL) { // if tx mode
+                spi->res->reg->DR = *spi->p_tx_ptr;
+                spi->p_tx_ptr++;
+            } else { // if we just read (rx mode) we must send dummy bute in DR
+                spi->res->reg->DR = 0xFF;
+                spi->res->reg->CR2 &= ~SPI_CR2_TXEIE;
+                spi->res->reg->CR2 |= SPI_CR2_RXNEIE;
+            }
+            spi->tx_cnt--;
+        } else { // if tx_cnt == 0
+            spi->res->reg->CR2 &= ~SPI_CR2_TXEIE;
+        }
+    }
+
+    // end of transaction
+    if(spi->tx_cnt == 0 && spi->rx_cnt == 0) {
+        spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
+        // waiting bus is empty
+        while(spi->res->reg->SR & SPI_SR_BSY);
+        // reset DR
+        if(spi->current_ctx->rx_buff == NULL) {
+            volatile uint32_t dummy = spi->res->reg->DR;
+            dummy = spi->res->reg->SR; // OVR
+            (void)dummy;
+        }
+        if(spi->callback != NULL) spi->callback(spi);
+    }
+}
+
+// SPI IT handlers
+
+void SPI1_IRQHandler(void) {
+    if(!spi_taken[0]) return;
+    SPIx_IRQHandler(0);
+}
+
+void SPI2_IRQHandler(void) {
+    if(!spi_taken[1]) return;
+    SPIx_IRQHandler(1);
+}
+
+void SPI3_IRQHandler(void) {
+    if(!spi_taken[2]) return;
+    SPIx_IRQHandler(2);
+}
+
+void SPI4_IRQHandler(void) {
+    if(!spi_taken[3]) return;
+    SPIx_IRQHandler(3);
 }

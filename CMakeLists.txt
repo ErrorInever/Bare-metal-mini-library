@@ -48,6 +48,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/DAC/dac.c
     Drivers/ADC/adc.c
     Drivers/I2C/i2c.c
+    Drivers/SPI/spi.c
 )
 
 # 4. Headers
@@ -61,6 +62,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/DAC/
     Drivers/ADC/
     Drivers/I2C/
+    Drivers/SPI/
 )
 
 # 5. Defines

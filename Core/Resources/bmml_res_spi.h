@@ -9,7 +9,7 @@ extern "C" {
 #include <stdint.h>
 #include "stm32f446xx.h"
 
-#define SPI_RES_COUNT 3
+#define SPI_RES_COUNT 4
 
 
 typedef struct {
@@ -41,6 +41,10 @@ static const spi_res_t spi_res[] = {
     { SPI3, DMA1, &RCC->APB1ENR, RCC_APB1ENR_SPI3EN, SPI3_IRQn,
       5, 0,   0, 0,                       // TX: stream5 ch0   RX: stream0 ch0
       DMA_HISR_TCIF5, DMA_LISR_TCIF0 },
+
+    { SPI4, DMA1, &RCC->APB2ENR, RCC_APB2ENR_SPI4EN, SPI4_IRQn, 
+        1, 4, 3, 5, 
+        DMA_LISR_TCIF1, DMA_LISR_TCIF3 },               // TX: stream1 ch4    RX: stream3 ch5
 };
 
 // Get index of I2C res

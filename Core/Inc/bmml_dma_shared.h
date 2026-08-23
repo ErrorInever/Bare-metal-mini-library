@@ -59,6 +59,23 @@ static inline void dma_clear_stream_flags(DMA_TypeDef *dma, uint8_t stream) {
     else dma->HIFCR = mask;
 }
 
+static inline uint32_t dma_teif_mask(uint32_t tcif_mask) {
+    return tcif_mask >> 2;
+}
+
+// Check Transfer Complete
+static inline bool dma_check_flag(dma_t *d, uint32_t mask, bool clear) {
+    volatile uint32_t *isr  = (d->num_stream <= 3) ? &d->res->reg->LISR : &d->res->reg->HISR;
+    volatile uint32_t *ifcr = (d->num_stream <= 3) ? &d->res->reg->LIFCR : &d->res->reg->HIFCR;
+    if (*isr & mask) {
+        if (clear) *ifcr = mask;
+        return true;
+    }
+    return false;
+}
+
+
+
 bmml_status_t bmml_dma_acquire_stream(DMA_TypeDef *dma, uint8_t stream, dma_stream_cb_t cb, void *ctx, DMA_Stream_TypeDef **out_stream);
 bmml_status_t bmml_dma_release_stream(DMA_TypeDef *dma, uint8_t stream);
 
