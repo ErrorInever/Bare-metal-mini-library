@@ -72,12 +72,14 @@ typedef struct spi_t {
 
     volatile spi_transaction_t ctx;
     volatile spi_transaction_t *current_ctx;
+    volatile bool tx_phase_done;
+    volatile bool rx_phase_done;
     bool busy;
     spi_callback_t callback;
 
 } spi_t;
 
-bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb);
+bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb, spi_t **out);
 bmml_status_t spi_release(spi_t *spi);
 bmml_status_t spi_it_transmit(spi_t *spi, spi_transaction_t *tr);
 bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr);

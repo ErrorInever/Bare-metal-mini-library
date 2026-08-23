@@ -27,9 +27,10 @@ static int spi_slot(const SPI_TypeDef *reg) {
     return -1;
 }
 
-bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb) {
+bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb,  spi_t **out) {
     if(reg == NULL) return BMML_INVALID_ARG;
-    if(br < 0 && br > 7) return BMML_INVALID_ARG;
+    if(out) *out = NULL;
+    if(br > SPI_BAUDRATE_DIV256 || br < SPI_BAUDRATE_DIV2) return BMML_INVALID_ARG;
 
     int slot = spi_slot(reg);
     if(slot < 0) return BMML_INVALID_ARG;
@@ -44,7 +45,7 @@ bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb
     spi->callback = cb;
 
     // RCC
-    *spi->res->rcc_reg = spi->res->rcc_mask;
+    *spi->res->rcc_reg |= spi->res->rcc_mask;
 
     // Reset and configure SPI
     spi_reset(reg);
@@ -52,14 +53,14 @@ bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb
                         | ((uint32_t)br << SPI_CR1_BR_Pos)      // Freq devider
                         | SPI_CR1_SSM                           // Manual control CS, SSM = 1
                         | SPI_CR1_SSI);                         // Need set to 1 for manual control SSM
-    
-    // Enable IT 
-    // spi->res->reg->CR2 |= SPI_CR2_TXEIE | SPI_CR2_RXNEIE;
+
     // Enable NVIC
     NVIC_EnableIRQ(spi->res->spi_irq);
     NVIC_SetPriority(spi->res->spi_irq, 5);
 
     spi_enable(reg);
+
+    if(out) *out = spi;
 
     return BMML_OK;
 }
@@ -74,10 +75,8 @@ bmml_status_t spi_release(spi_t *spi) {
 
     spi_reset(spi->res->reg); // disable SPI module
     spi->res->reg->CR2 &= ~(SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE);
-    spi_taken[slot] = false;
-    spi_pool[slot] = (spi_t){0};
-
     NVIC_DisableIRQ(spi->res->spi_irq);
+
 
     if(spi->dma_tx_acquired) {
         if((dma_disable_stream(spi->dma_tx.stream)) != BMML_OK) return BMML_TIMEOUT;
@@ -89,6 +88,9 @@ bmml_status_t spi_release(spi_t *spi) {
         bmml_dma_release_stream(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
         dma_clear_stream_flags(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
     }
+
+    spi_taken[slot] = false;
+    spi_pool[slot] = (spi_t){0};
 
     return BMML_OK;
 }
@@ -141,7 +143,7 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
     if (tr->tx_len == 0 && tr->rx_len == 0) return BMML_INVALID_ARG;
 
     // DMA TX acquired
-    if(tr->tx_len > 0 && !spi->dma_tx_acquired) {
+    if(!spi->dma_tx_acquired) {
         int idx = spi_res_idx(spi->res->reg);
         if(idx < 0) return BMML_INVALID_ARG;
         int dma_idx = dma_res_idx(spi_res[idx].dma);
@@ -152,7 +154,7 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
         if(st != BMML_OK) return BMML_INVALID_ARG;
 
         spi->dma_tx_acquired = true;
-        spi->dma_tx.res = &dma_res[idx];
+        spi->dma_tx.res = &dma_res[dma_idx];
         spi->dma_tx.stream = dma_stream;
         spi->dma_tx.num_stream = spi_res[idx].dma_tx_stream;
         spi->dma_tx.channel = spi_res[idx].dma_tx_channel;
@@ -163,7 +165,7 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
         dma_disable_stream(spi->dma_tx.stream);
     }
     // DMA RX acquired
-    if(tr->rx_len > 0 && !spi->dma_rx_acquired) {
+    if(!spi->dma_rx_acquired) {
         int idx = spi_res_idx(spi->res->reg);
         if(idx < 0) return BMML_INVALID_ARG;
         int dma_idx = dma_res_idx(spi_res[idx].dma);
@@ -172,6 +174,12 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
         DMA_Stream_TypeDef *dma_stream;
         bmml_status_t st = bmml_dma_acquire_stream(spi_res[idx].dma, spi_res[idx].dma_rx_stream, spi_dma_rx_isr, spi, &dma_stream);
         if(st != BMML_OK) return BMML_INVALID_ARG;
+
+        spi->dma_rx_acquired = true;
+        spi->dma_rx.res = &dma_res[dma_idx];
+        spi->dma_rx.stream = dma_stream;
+        spi->dma_rx.num_stream = spi_res[idx].dma_rx_stream;
+        spi->dma_rx.channel = spi_res[idx].dma_rx_channel;
 
         // Enable DMA RCC
         *spi->dma_rx.res->rcc_reg |= spi->dma_rx.res->rcc_mask;
@@ -208,7 +216,7 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
         spi->dma_tx.stream->M0AR = (uint32_t)tr->tx_buff; 
         tx_cr |= DMA_SxCR_MINC; // increment memory (buffer) 
     } else {  // if we only read we must to send a dummy bites
-        spi->dma_rx.stream->M0AR = (uint32_t)&dma_dummy_tx;
+        spi->dma_tx.stream->M0AR = (uint32_t)&dma_dummy_tx;
         // MINC disable, DMA will cyclically read the same byte, 0xFF
     }
     // RX stream
@@ -224,6 +232,9 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
     spi->dma_tx.stream->CR = tx_cr;
     spi->dma_rx.stream->CR = rx_cr;
 
+    spi->tx_phase_done = false;
+    spi->rx_phase_done = false;
+
     // Enable streams
     spi->dma_tx.stream->CR |= DMA_SxCR_EN;
     spi->dma_rx.stream->CR |= DMA_SxCR_EN;
@@ -235,52 +246,64 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
     return BMML_OK;
 }
 
-
-static void DMA_error(spi_t *spi, dma_t *d, uint32_t teif_mask) {
-    dma_check_flag(d, teif_mask, true); 
-    d->stream->CR &= ~DMA_SxCR_EN; 
-    while (d->stream->CR & DMA_SxCR_EN) { } 
-    spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
-    spi->status  = BMML_ERROR;
-    spi->hw_error = teif_mask;
-    spi->busy    = false;
-}
-
 static void DMA_finish(spi_t *spi) {
     spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
     spi->status = BMML_OK;
     spi->busy   = false;
+    if(spi->callback != NULL) spi->callback(spi);
 }
 
 static void DMA_tx_complete(spi_t *spi) {
     spi->res->reg->CR2 &= ~SPI_CR2_TXDMAEN;
-    spi->ctx.tx_len = 0;
-    DMA_finish(spi);
+    spi->tx_phase_done = true;
+    if(spi->rx_phase_done) DMA_finish(spi);
+}
+static void DMA_rx_complete(spi_t *spi) {
+    spi->res->reg->CR2 &= ~SPI_CR2_RXDMAEN;
+    spi->rx_phase_done = true;
+    if(spi->tx_phase_done) DMA_finish(spi);
+}
+
+static void spi_abort_error(spi_t *spi, uint32_t hw_error) {
+    spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
+    spi->status = BMML_ERROR;
+    spi->hw_error = hw_error;
+    spi->busy = false;
+
+    if(spi->dma_tx_acquired) {
+        dma_disable_stream(spi->dma_tx.stream);
+        bmml_dma_release_stream(spi->dma_tx.res->reg, spi->dma_tx.num_stream);
+        dma_clear_stream_flags(spi->dma_tx.res->reg, spi->dma_tx.num_stream);
+        spi->dma_tx_acquired = false;   // см. пункт C
+    }
+    if(spi->dma_rx_acquired) {
+        dma_disable_stream(spi->dma_rx.stream);
+        bmml_dma_release_stream(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
+        dma_clear_stream_flags(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
+        spi->dma_rx_acquired = false;
+    }
+
+    if(spi->callback != NULL) spi->callback(spi);
 }
 
 static void spi_dma_tx_isr(void *ctx) {
     spi_t *spi = (spi_t *)ctx;
     uint32_t teif = dma_teif_mask(spi->res->tx_tcif_mask);
     if(dma_check_flag(&spi->dma_tx, teif, false)) {
-        DMA_error(spi, &spi->dma_tx, teif);
+        spi_abort_error(spi, teif);           // гасит ОБА стрима + releases + callback
     } else if(dma_check_flag(&spi->dma_tx, spi->res->tx_tcif_mask, true)) {
         DMA_tx_complete(spi);
-    } else {
-        return;
     }
-    if(spi->callback != NULL) spi->callback(spi);
 }
+
 static void spi_dma_rx_isr(void *ctx) {
     spi_t *spi = (spi_t *)ctx;
     uint32_t teif = dma_teif_mask(spi->res->rx_tcif_mask);
     if(dma_check_flag(&spi->dma_rx, teif, false)) {
-        DMA_error(spi, &spi->dma_rx, teif);
+        spi_abort_error(spi, teif);
     } else if(dma_check_flag(&spi->dma_rx, spi->res->rx_tcif_mask, true)) {
-        DMA_tx_complete(spi);
-    } else {
-        return;
+        DMA_rx_complete(spi);
     }
-    if(spi->callback != NULL) spi->callback(spi);
 }
 
 // IT and Errors
@@ -296,20 +319,12 @@ static void SPIx_IRQHandler(int slot) {
             // reset OVR
             (void)spi->res->reg->DR;
             (void)spi->res->reg->SR;
-            spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
-            spi->status = BMML_ERROR;
-            spi->hw_error = SPI_SR_OVR;
-            spi->busy = false;
-            if(spi->callback != NULL) spi->callback(spi);
+            spi_abort_error(spi, SPI_SR_OVR);
         }
         // mode fault
         if(sr & SPI_SR_MODF) {
             spi->res->reg->CR1 &= ~SPI_CR1_SPE;
-            spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
-            spi->status = BMML_ERROR;
-            spi->hw_error = SPI_SR_MODF;
-            spi->busy = false;
-            if(spi->callback != NULL) spi->callback(spi);
+            spi_abort_error(spi, SPI_SR_MODF);
         }
     }
     // RXNE
