@@ -29,6 +29,10 @@ typedef struct usart_t {
 
     RingBuffer_t *tx_buffer;
     RingBuffer_t *rx_buffer;
+    uint8_t dma_rx_tail;
+
+    volatile bool tx_phase_done;
+    volatile bool rx_phase_done;
 
     bool busy;
     usart_callback_t callback;
@@ -38,6 +42,7 @@ bmml_status_t usart_acquire(USART_TypeDef *reg, uint32_t br, usart_callback_t cb
 bmml_status_t usart_release(usart_t *usart);
 bmml_status_t usart_it_transmit(usart_t *usart, const char *data);
 bmml_status_t usart_dma_transmit(usart_t *usart, const char *data, uint16_t size);
+bmml_status_t usart_dma_start_rx(usart_t *usart, uint8_t *buf, uint16_t buf_len);
 
 bmml_status_t usart_printf(usart_t *usart, const char *format, ...);
 
@@ -48,6 +53,14 @@ bmml_status_t usart_printf(usart_t *usart, const char *format, ...);
  */
 static inline uint8_t usart_receive_byte(const USART_TypeDef *reg) {
     return reg->DR & 0xFF;
+}
+
+static inline void usart_enable(USART_TypeDef *reg) {
+    reg->CR1 |= USART_CR1_UE;
+}
+
+static inline void usart_disable(USART_TypeDef *reg) {
+    reg->CR1 &= ~USART_CR1_UE;
 }
 
 #ifdef __cplusplus

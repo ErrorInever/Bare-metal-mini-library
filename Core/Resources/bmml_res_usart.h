@@ -131,7 +131,7 @@ static const usart_res_t usart_res[] = {
 };
 
 // Get index of USART res
-static inline int usartres_idx(const USART_TypeDef *reg) {
+static inline int usart_res_idx(const USART_TypeDef *reg) {
     for(int i = 0; i < (int)USART_RES_COUNT; i++) {
         if(usart_res[i].reg == reg) return i;
     }
