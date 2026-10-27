@@ -94,7 +94,7 @@ bmml_status_t usart_acquire(USART_TypeDef *reg, uint32_t br, usart_callback_t cb
 
     usart_enable(usart->res->reg);
 
-    *out = usart;
+    if(out) *out = usart;
 
     return BMML_OK;
 }
@@ -170,12 +170,13 @@ bmml_status_t usart_dma_transmit(usart_t *usart, const char *data, uint16_t size
         usart->dma_tx.channel = usart_res[idx].dma_tx_channel;
 
         *usart->dma_tx.res->rcc_reg |= usart->dma_tx.res->rcc_mask;
-        dma_disable_stream(usart->dma_tx.stream);
-        dma_clear_stream_flags(usart->dma_tx.res->reg, usart->dma_tx.num_stream);
     }
 
     usart->busy = true;
     usart->tx_phase_done = false;
+
+    dma_disable_stream(usart->dma_tx.stream);
+    dma_clear_stream_flags(usart->dma_tx.res->reg, usart->dma_tx.num_stream);
 
     usart->dma_tx.stream->PAR  = (uint32_t)&usart->res->reg->DR;
     usart->dma_tx.stream->M0AR = (uint32_t)data;
