@@ -4,21 +4,19 @@
         {
             "name": "STM32 F446 Debug (OpenOCD)",
             "cwd": "${workspaceFolder}",
-            // CMake Tools to .elf file
             "executable": "${command:cmake.launchTargetPath}",
             "request": "launch",
             "type": "cortex-debug",
             "runToEntryPoint": "main",
-            // openocd
             "servertype": "openocd",
-            // configures files for STM32F4
+            "serverpath": "C:/Tools/xpack-openocd/bin/openocd.exe",
             "configFiles": [
                 "interface/stlink.cfg",
                 "target/stm32f4x.cfg"
             ],
-            // System GDB 
-            "gdbPath": "/usr/bin/gdb",
-            "showDevDebugOutput": "raw"
+            "gdbPath": "C:/Tools/arm-gnu-toolchain-15.3.rel2-mingw-w64-x86_64-arm-none-eabi/bin/arm-none-eabi-gdb.exe",
+            "showDevDebugOutput": "raw",
         }
+        
     ]
 }

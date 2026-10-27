@@ -44,7 +44,7 @@ bmml_status_t usart_it_transmit(usart_t *usart, const char *data);
 bmml_status_t usart_dma_transmit(usart_t *usart, const char *data, uint16_t size);
 bmml_status_t usart_dma_start_rx(usart_t *usart, uint8_t *buf, uint16_t buf_len);
 
-bmml_status_t usart_printf(usart_t *usart, const char *format, ...);
+bmml_status_t usart_printf(usart_t *usart, const char *format, ...)__attribute__((format(printf, 2, 3)));
 
 /**
  * @brief Inline utility mapping an immediate 8-bit read directly off the hardware data register bus structure.

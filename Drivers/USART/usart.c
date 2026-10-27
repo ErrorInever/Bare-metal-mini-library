@@ -5,9 +5,21 @@
 #include "stm32f446xx.h"
 #include <stdint.h>
 #include "bmml_utilities.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <stddef.h>
 
+#ifndef USART_PRINTF_BUF_SIZE
+#define USART_PRINTF_BUF_SIZE 96
+#endif
+
+#ifndef USART_COUNT
 #define USART_COUNT 6
+#endif
+
+#ifndef RING_BUF_SIZE
 #define RING_BUF_SIZE 128
+#endif
 
 static void usart_dma_tx_isr(void *ctx);
 static void usart_dma_rx_isr(void *ctx);
@@ -239,6 +251,41 @@ bmml_status_t usart_dma_start_rx(usart_t *usart, uint8_t *buf, uint16_t buf_len)
 
 
     return BMML_OK;
+}
+
+static bmml_status_t usart_it_enqueue(usart_t *usart, const uint8_t *data, size_t len) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    for(size_t i = 0; i < len; i++) {
+        uint8_t b = data[i];
+        ring_buffer_push(usart->tx_buffer, &b);
+    }
+    usart->busy = true;
+    usart->res->reg->CR1 |= USART_CR1_TXEIE;
+    __set_PRIMASK(primask);
+    return BMML_OK;
+}
+
+bmml_status_t usart_printf(usart_t *usart, const char *format, ...) {
+    if(usart == NULL || usart->res == NULL || format == NULL) return BMML_INVALID_ARG;
+    if(usart->res->reg->CR3 & USART_CR3_DMAT) return BMML_BUSY;
+
+    char buf[USART_PRINTF_BUF_SIZE];
+
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+
+    if(n < 0) return BMML_ERROR;
+    if(n == 0) return BMML_OK;
+
+    bool truncated = ((size_t)n >= sizeof(buf));
+    size_t len = truncated ? sizeof(buf) - 1 : (size_t)n;
+
+    usart_it_enqueue(usart, (const uint8_t *)buf, len);
+
+    return truncated ? BMML_ERROR : BMML_OK;
 }
 
 static void USARTx_IRQHandler(int slot) {

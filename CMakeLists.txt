@@ -41,6 +41,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/bmml_utilities.c
     Core/Src/bmml_irq_shared.c
     Core/Src/bmml_dma_shared.c
+    Core/Src/bmml_ring_buffer.c
     Core/Src/system_stm32f4xx.c
     startup_stm32f446xx.s
     Drivers/GPIO/gpio.c
@@ -49,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/ADC/adc.c
     Drivers/I2C/i2c.c
     Drivers/SPI/spi.c
+    Drivers/USART/usart.c
 )
 
 # 4. Headers
@@ -63,6 +65,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/ADC/
     Drivers/I2C/
     Drivers/SPI/
+    Drivers/USART/
 )
 
 # 5. Defines
@@ -78,6 +81,7 @@ target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
     -mfpu=fpv4-sp-d16
     -mfloat-abi=hard
     -specs=nano.specs
+    -specs=nosys.specs
     -Wl,--gc-sections
     -Wl,-Map=${CMAKE_PROJECT_NAME}.map
 )
