@@ -220,7 +220,7 @@ bmml_status_t usart_dma_start_rx(usart_t *usart, uint8_t *buf, uint16_t buf_len)
 
         *usart->dma_rx.res->rcc_reg |= usart->dma_rx.res->rcc_mask;
         dma_disable_stream(usart->dma_rx.stream);
-        dma_clear_stream_flags(usart->dma_tx.res->reg, usart->dma_tx.num_stream);
+        dma_clear_stream_flags(usart->dma_rx.res->reg, usart->dma_rx.num_stream);
     }
 
     usart->dma_rx.stream->PAR  = (uint32_t)&usart->res->reg->DR;
