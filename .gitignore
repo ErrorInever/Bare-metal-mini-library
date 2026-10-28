@@ -30,3 +30,6 @@ Release/
 # --- system ---
 .DS_Store
 Thumbs.db
+
+# libs
+Drivers/CMSIS/
