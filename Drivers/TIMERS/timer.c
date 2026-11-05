@@ -44,6 +44,66 @@ static uint32_t timer_get_clock_hz(const timer_res_t *res) {
     return (ppre < 4) ? pclk : pclk * 2;
 }
 
+// Find PSC/ARR for target update frequency. ticks = clk / freq must fit in 16x16 bit.
+static bmml_status_t timer_calc_freq(const timer_res_t *res, uint32_t freq_hz,
+                                     uint32_t *psc, uint32_t *arr) {
+    if(freq_hz == 0) return BMML_INVALID_ARG;
+    uint32_t ticks = timer_get_clock_hz(res) / freq_hz;
+    if(ticks < 2U) return BMML_INVALID_ARG;          // freq too high
+
+    uint32_t p = (ticks - 1U) / 65536U;              // smallest PSC so that ARR fits 16 bit
+    if(p > 0xFFFFU) return BMML_INVALID_ARG;         // freq too low
+    uint32_t n = ticks / (p + 1U);                   // >= 2 always
+
+    *psc = p;
+    *arr = n - 1U;
+    return BMML_OK;
+}
+
+bmml_status_t timer_basic_acquire_trigger(TIM_TypeDef *reg, uint32_t freq_hz, timer_basic_t **out) {
+    if(out) *out = NULL;
+
+    int slot = timer_basic_slot(reg);
+    if(slot < 0) return BMML_INVALID_ARG;
+    if(timer_basic_taken[slot]) return BMML_BUSY;
+
+    int idx = timer_res_idx(reg);
+    if(idx < 0) return BMML_INVALID_ARG;
+
+    uint32_t psc, arr;
+    bmml_status_t st = timer_calc_freq(&timer_res[idx], freq_hz, &psc, &arr);
+    if(st != BMML_OK) return st;                     // nothing taken yet
+
+    timer_basic_taken[slot] = true;
+    timer_basic_t *timer = &timer_basic_pool[slot];
+    timer->res = &timer_res[idx];
+    timer->callback = NULL;
+    timer->status = false;
+
+    *timer->res->rcc_reg |= timer->res->rcc_mask;
+    (void)*timer->res->rcc_reg;                      // RCC write-to-effect delay
+
+    reg->CR1 &= ~TIM_CR1_CEN;
+    reg->DIER = 0U;                                  // no interrupts
+    reg->PSC = psc;
+    reg->ARR = arr;
+    reg->EGR = TIM_EGR_UG;                           // load PSC (do this BEFORE setting MMS)
+    reg->SR = 0U;
+
+    if(out) *out = timer;
+    return BMML_OK;
+}
+
+bmml_status_t timer_basic_set_freq_hz(const timer_basic_t *timer, uint32_t freq_hz) {
+    if(timer == NULL || timer->res == NULL) return BMML_INVALID_ARG;
+    uint32_t psc, arr;
+    bmml_status_t st = timer_calc_freq(timer->res, freq_hz, &psc, &arr);
+    if(st != BMML_OK) return st;
+    timer->res->reg->PSC = psc;
+    timer->res->reg->ARR = arr;
+    return BMML_OK;
+}
+
 bmml_status_t timer_basic_acquire(TIM_TypeDef *reg, const uint32_t period_ms, timer_basic_callback_t cb, timer_basic_t **out) {
     if(out) *out = NULL;
     if (period_ms == 0 || period_ms > TIMER_BASIC_MAX_PERIOD_MS) return BMML_INVALID_ARG;

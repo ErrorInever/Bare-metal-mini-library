@@ -247,6 +247,19 @@ static inline void timer_pwm_stop(timer_pwm_t *timer) {
     timer->status = false;
 }
 
+/**
+ * @brief Acquires TIM6/TIM7 as a pure trigger source (no interrupt, no callback).
+ * Update event frequency = freq_hz (rounded down to the nearest achievable value).
+ * Timer is left stopped; TRGO (MMS) is configured by the caller.
+ */
+bmml_status_t timer_basic_acquire_trigger(TIM_TypeDef *reg, uint32_t freq_hz, timer_basic_t **out);
+
+/**
+ * @brief Changes update frequency on the fly. PSC is applied at the next update event,
+ * so no artificial UG/TRGO pulse is generated.
+ */
+bmml_status_t timer_basic_set_freq_hz(const timer_basic_t *timer, uint32_t freq_hz);
+
 /* --------------------------------------------------------------------------------------- */
 
 #ifdef __cplusplus
