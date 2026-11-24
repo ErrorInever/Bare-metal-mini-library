@@ -92,7 +92,7 @@ bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb
 }
 
 bmml_status_t spi_release(spi_t *spi) {
-    if(spi == NULL) return BMML_INVALID_ARG;
+    if(spi == NULL || spi->res == NULL) return BMML_INVALID_ARG;
     if(spi->busy) return BMML_BUSY;
 
     int slot = spi_slot(spi->res->reg);
