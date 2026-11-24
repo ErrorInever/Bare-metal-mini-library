@@ -75,6 +75,7 @@ typedef struct spi_t {
     volatile bool tx_phase_done;
     volatile bool rx_phase_done;
     bool busy;
+    bool xfer_dma;                             /**<true: current transfer is DMA, the IRQ handler only handles errors */
     spi_callback_t callback;
 
 } spi_t;
