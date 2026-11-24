@@ -27,6 +27,32 @@ static int spi_slot(const SPI_TypeDef *reg) {
     return -1;
 }
 
+/* Transfer length, or 0 if the transaction is invalid */
+static uint16_t spi_xfer_len(const spi_transaction_t *tr) {
+    if(tr->tx_buff == NULL && tr->rx_buff == NULL) return 0;
+    if(tr->tx_buff != NULL && tr->rx_buff != NULL)
+        return (tr->tx_len == tr->rx_len) ? tr->tx_len : 0;   /* full duplex: lengths must match */
+    return (tr->tx_buff != NULL) ? tr->tx_len : tr->rx_len;
+}
+
+static void spi_wait_idle(SPI_TypeDef *reg) {
+    uint32_t t = 10000U;
+    while((reg->SR & SPI_SR_BSY) && --t);
+}
+
+/* Single exit point of every transfer */
+static void spi_complete(spi_t *spi, bmml_status_t status, uint32_t hw_error) {
+    spi->res->reg->CR2 &= ~(SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE |
+                            SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN);
+    spi->status   = status;
+    spi->hw_error = hw_error;
+    spi->busy     = false;
+
+    /* per-transaction callback has priority over the driver-level one */
+    spi_callback_t cb = (spi->ctx.callback != NULL) ? spi->ctx.callback : spi->callback;
+    if(cb != NULL) cb(spi);
+}
+
 bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb,  spi_t **out) {
     if(reg == NULL) return BMML_INVALID_ARG;
     if(out) *out = NULL;
