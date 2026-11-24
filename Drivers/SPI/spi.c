@@ -122,42 +122,28 @@ bmml_status_t spi_release(spi_t *spi) {
 }
 
 bmml_status_t spi_it_transmit(spi_t *spi, spi_transaction_t *tr) {
-    if(spi == NULL) return BMML_INVALID_ARG;
-    if(tr == NULL) return BMML_INVALID_ARG;
+    if(spi == NULL || spi->res == NULL || tr == NULL) return BMML_INVALID_ARG;
     if(spi->busy) return BMML_BUSY;
-    if (tr->tx_len == 0 && tr->rx_len == 0) return BMML_INVALID_ARG;
 
-    // Init context
-    spi->busy = true;
-    spi->current_ctx = tr;
-    spi->p_tx_ptr = (uint8_t *)tr->tx_buff;
-    spi->p_rx_ptr = tr->rx_buff;
+    uint16_t len = spi_xfer_len(tr);
+    if(len == 0) return BMML_INVALID_ARG;
 
-    uint32_t cr2mask = 0;
+    SPI_TypeDef *r = spi->res->reg;
+    (void)r->DR; (void)r->SR;                  /* clear a stale OVR */
 
-    // TX mode only (we send data and read dummy bytes)
-    if(tr->rx_buff == NULL) {
-        spi->tx_cnt = tr->tx_len;
-        spi->rx_cnt = tr->tx_len;
-        cr2mask = (SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE);
-    }
-    // RX mode only (send dummy bytes for reading)
-    else if(tr->tx_buff == NULL) {
-        spi->rx_cnt = tr->rx_len;
-        spi->tx_cnt = tr->rx_len;
-        cr2mask = (SPI_CR2_TXEIE | SPI_CR2_ERRIE); // enable only TXEIE for sync first byte
-    }
-    // Full duplex mode
-    else {
-        spi->tx_cnt = tr->tx_len;
-        spi->rx_cnt = tr->rx_len;
-        cr2mask = (SPI_CR2_TXEIE | SPI_CR2_RXNEIE | SPI_CR2_ERRIE);
-    }
+    spi->busy      = true;
+    spi->xfer_dma  = false;
+    spi->ctx       = *tr;
+    spi->status    = BMML_OK;
+    spi->hw_error  = 0U;
+    spi->p_tx_ptr  = (uint8_t *)tr->tx_buff;   /* NULL in RX-only mode */
+    spi->p_rx_ptr  = tr->rx_buff;              /* NULL in TX-only mode */
+    spi->tx_cnt    = len;
+    spi->rx_cnt    = len;
 
-    // reset old flags
-    spi_reset_flags(spi->res->reg);
-
-    spi->res->reg->CR2 = cr2mask;
+    uint32_t cr2 = SPI_CR2_TXEIE | SPI_CR2_ERRIE;
+    if(tr->tx_buff != NULL) cr2 |= SPI_CR2_RXNEIE;   /* RX-only enables RXNEIE after the first dummy byte */
+    r->CR2 |= cr2;
 
     return BMML_OK;
 }
