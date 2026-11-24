@@ -273,10 +273,8 @@ bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
 }
 
 static void DMA_finish(spi_t *spi) {
-    spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
-    spi->status = BMML_OK;
-    spi->busy   = false;
-    if(spi->callback != NULL) spi->callback(spi);
+    spi_wait_idle(spi->res->reg);
+    spi_complete(spi, BMML_OK, 0U);
 }
 
 static void DMA_tx_complete(spi_t *spi) {
@@ -291,25 +289,15 @@ static void DMA_rx_complete(spi_t *spi) {
 }
 
 static void spi_abort_error(spi_t *spi, uint32_t hw_error) {
-    spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
-    spi->status = BMML_ERROR;
-    spi->hw_error = hw_error;
-    spi->busy = false;
-
     if(spi->dma_tx_acquired) {
         dma_disable_stream(spi->dma_tx.stream);
-        bmml_dma_release_stream(spi->dma_tx.res->reg, spi->dma_tx.num_stream);
         dma_clear_stream_flags(spi->dma_tx.res->reg, spi->dma_tx.num_stream);
-        spi->dma_tx_acquired = false;   // см. пункт C
     }
     if(spi->dma_rx_acquired) {
         dma_disable_stream(spi->dma_rx.stream);
-        bmml_dma_release_stream(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
         dma_clear_stream_flags(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
-        spi->dma_rx_acquired = false;
     }
-
-    if(spi->callback != NULL) spi->callback(spi);
+    spi_complete(spi, BMML_ERROR, hw_error);
 }
 
 static void spi_dma_tx_isr(void *ctx) {
