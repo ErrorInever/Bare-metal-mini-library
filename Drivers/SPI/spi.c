@@ -189,111 +189,65 @@ static bmml_status_t spi_dma_acquire_dir(spi_t *spi, bool tx) {
 }
 
 bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
-    if(spi == NULL) return BMML_INVALID_ARG;
-    if(tr == NULL) return BMML_INVALID_ARG;
+    if(spi == NULL || spi->res == NULL || tr == NULL) return BMML_INVALID_ARG;
     if(spi->busy) return BMML_BUSY;
-    if (tr->tx_len == 0 && tr->rx_len == 0) return BMML_INVALID_ARG;
 
-    // DMA TX acquired
-    if(!spi->dma_tx_acquired) {
-        int idx = spi_res_idx(spi->res->reg);
-        if(idx < 0) return BMML_INVALID_ARG;
-        int dma_idx = dma_res_idx(spi_res[idx].dma);
-        if(dma_idx < 0) return BMML_INVALID_ARG;
+    uint16_t len = spi_xfer_len(tr);
+    if(len == 0) return BMML_INVALID_ARG;
 
-        DMA_Stream_TypeDef *dma_stream;
-        bmml_status_t st = bmml_dma_acquire_stream(spi_res[idx].dma, spi_res[idx].dma_tx_stream, spi_dma_tx_isr, spi, &dma_stream);
-        if(st != BMML_OK) return BMML_INVALID_ARG;
+    bmml_status_t st = spi_dma_acquire_dir(spi, true);
+    if(st != BMML_OK) return st;
+    st = spi_dma_acquire_dir(spi, false);
+    if(st != BMML_OK) return st;
 
-        spi->dma_tx_acquired = true;
-        spi->dma_tx.res = &dma_res[dma_idx];
-        spi->dma_tx.stream = dma_stream;
-        spi->dma_tx.num_stream = spi_res[idx].dma_tx_stream;
-        spi->dma_tx.channel = spi_res[idx].dma_tx_channel;
+    /* Streams must be off before they are reprogrammed; drop stale flags */
+    if(dma_disable_stream(spi->dma_tx.stream) != BMML_OK) return BMML_TIMEOUT;
+    if(dma_disable_stream(spi->dma_rx.stream) != BMML_OK) return BMML_TIMEOUT;
+    dma_clear_stream_flags(spi->dma_tx.res->reg, spi->dma_tx.num_stream);
+    dma_clear_stream_flags(spi->dma_rx.res->reg, spi->dma_rx.num_stream);
 
-        // Enable DMA RCC
-        *spi->dma_tx.res->rcc_reg |= spi->dma_tx.res->rcc_mask;
-        // Disable stream for configure 
-        dma_disable_stream(spi->dma_tx.stream);
-    }
-    // DMA RX acquired
-    if(!spi->dma_rx_acquired) {
-        int idx = spi_res_idx(spi->res->reg);
-        if(idx < 0) return BMML_INVALID_ARG;
-        int dma_idx = dma_res_idx(spi_res[idx].dma);
-        if(dma_idx < 0) return BMML_INVALID_ARG;
+    SPI_TypeDef *r = spi->res->reg;
+    (void)r->DR; (void)r->SR;                  /* clear a stale OVR */
 
-        DMA_Stream_TypeDef *dma_stream;
-        bmml_status_t st = bmml_dma_acquire_stream(spi_res[idx].dma, spi_res[idx].dma_rx_stream, spi_dma_rx_isr, spi, &dma_stream);
-        if(st != BMML_OK) return BMML_INVALID_ARG;
-
-        spi->dma_rx_acquired = true;
-        spi->dma_rx.res = &dma_res[dma_idx];
-        spi->dma_rx.stream = dma_stream;
-        spi->dma_rx.num_stream = spi_res[idx].dma_rx_stream;
-        spi->dma_rx.channel = spi_res[idx].dma_rx_channel;
-
-        // Enable DMA RCC
-        *spi->dma_rx.res->rcc_reg |= spi->dma_rx.res->rcc_mask;
-        // Disable stream for configure 
-        dma_disable_stream(spi->dma_rx.stream);
-    }
-
-    spi->busy = true;
-    spi->ctx = *tr;
-    spi->current_ctx = tr;
-    
-    // len of transaction
-    uint16_t total_len = (tr->tx_len > tr->rx_len) ? tr->tx_len : tr->rx_len;
-    spi->dma_tx.stream->NDTR = total_len;
-    spi->dma_rx.stream->NDTR = total_len;
-
-    uint32_t tx_cr = 0U;
-    uint32_t rx_cr = 0U;
-
-    // Direction
-    tx_cr |= DMA_SxCR_DIR_0; // Memory to peripheral
-    rx_cr |= 0U;             // Peripheral to memory
-
-    // Select channels
-    tx_cr |= (spi->dma_tx.channel << DMA_SxCR_CHSEL_Pos);
-    rx_cr |= (spi->dma_rx.channel << DMA_SxCR_CHSEL_Pos);
-
-    // Static PAR addrs
-    spi->dma_tx.stream->PAR = (uint32_t)&spi->res->reg->DR;
-    spi->dma_rx.stream->PAR = (uint32_t)&spi->res->reg->DR;
-
-    // TX stream
-    if(tr->tx_buff != NULL) {
-        spi->dma_tx.stream->M0AR = (uint32_t)tr->tx_buff; 
-        tx_cr |= DMA_SxCR_MINC; // increment memory (buffer) 
-    } else {  // if we only read we must to send a dummy bites
-        spi->dma_tx.stream->M0AR = (uint32_t)&dma_dummy_tx;
-        // MINC disable, DMA will cyclically read the same byte, 0xFF
-    }
-    // RX stream
-    if(tr->rx_buff != NULL) { // if read
-        spi->dma_rx.stream->M0AR = (uint32_t)tr->rx_buff;
-        rx_cr |= DMA_SxCR_MINC; // increment memory (buffer)
-    } else { // if we only send we must to read a dummy bites
-        spi->dma_rx.stream->M0AR = (uint32_t)&dma_dummy_rx;
-        // MINC disable, DMA will accumulate all incoming bytes into dummy_rx
-    }
-
-    // Update CR reg
-    spi->dma_tx.stream->CR = tx_cr;
-    spi->dma_rx.stream->CR = rx_cr;
-
+    spi->busy          = true;
+    spi->xfer_dma      = true;
+    spi->ctx           = *tr;
+    spi->status        = BMML_OK;
+    spi->hw_error      = 0U;
     spi->tx_phase_done = false;
     spi->rx_phase_done = false;
 
-    // Enable streams
+    spi->dma_tx.stream->PAR  = (uint32_t)&r->DR;
+    spi->dma_rx.stream->PAR  = (uint32_t)&r->DR;
+    spi->dma_tx.stream->NDTR = len;
+    spi->dma_rx.stream->NDTR = len;
+
+    uint32_t tx_cr = (spi->dma_tx.channel << DMA_SxCR_CHSEL_Pos)
+                   | DMA_SxCR_DIR_0                       /* memory -> peripheral */
+                   | DMA_SxCR_TCIE | DMA_SxCR_TEIE;       /* FIX: interrupts were missing */
+    uint32_t rx_cr = (spi->dma_rx.channel << DMA_SxCR_CHSEL_Pos)
+                   | DMA_SxCR_TCIE | DMA_SxCR_TEIE;
+
+    if(tr->tx_buff != NULL) {
+        spi->dma_tx.stream->M0AR = (uint32_t)tr->tx_buff;
+        tx_cr |= DMA_SxCR_MINC;
+    } else {
+        spi->dma_tx.stream->M0AR = (uint32_t)&dma_dummy_tx;   /* RX-only: clock out 0xFF */
+    }
+    if(tr->rx_buff != NULL) {
+        spi->dma_rx.stream->M0AR = (uint32_t)tr->rx_buff;
+        rx_cr |= DMA_SxCR_MINC;
+    } else {
+        spi->dma_rx.stream->M0AR = (uint32_t)&dma_dummy_rx;   /* TX-only: throw RX bytes away */
+    }
+    spi->dma_tx.stream->CR = tx_cr;
+    spi->dma_rx.stream->CR = rx_cr;
+
+    r->CR2 |= SPI_CR2_ERRIE;
+    spi->dma_rx.stream->CR |= DMA_SxCR_EN;     /* RX first, so no incoming byte is lost */
     spi->dma_tx.stream->CR |= DMA_SxCR_EN;
-    spi->dma_rx.stream->CR |= DMA_SxCR_EN;
-    // Enable Errors
-    spi->res->reg->CR2 |= SPI_CR2_ERRIE;
-    // Enable DMA
-    spi->res->reg->CR2 |=(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN);
+    r->CR2 |= SPI_CR2_RXDMAEN;
+    r->CR2 |= SPI_CR2_TXDMAEN;                 /* TX request starts the transfer */
 
     return BMML_OK;
 }
