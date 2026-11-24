@@ -8,6 +8,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stddef.h>
+#include <string.h>
+#include <stdbool.h>
 
 #ifndef USART_PRINTF_BUF_SIZE
 #define USART_PRINTF_BUF_SIZE 96
@@ -41,6 +43,80 @@ static int usart_slot(const USART_TypeDef *reg) {
     if(reg == UART5)  return 4;
     if(reg == USART6) return 5;
     return -1;
+}
+
+static inline uint32_t dma_htif_mask(uint32_t tcif_mask) { return tcif_mask >> 1; }
+
+static void usart_notify(usart_t *u, usart_event_t ev) {
+    if(u->callback != NULL) u->callback(u, ev);
+}
+
+static void usart_dma_stop(dma_t *d) {
+    (void)dma_disable_stream(d->stream);       /* bounded wait, safe in ISR */
+    dma_clear_stream_flags(d->res->reg, d->num_stream);
+}
+
+/* Acquire the DMA stream of one direction (lazy, kept until usart_release) */
+static bmml_status_t usart_dma_acquire_dir(usart_t *u, bool tx) {
+    bool *acquired = tx ? &u->dma_tx_acquired : &u->dma_rx_acquired;
+    if(*acquired) return BMML_OK;
+
+    dma_t *d = tx ? &u->dma_tx : &u->dma_rx;
+    uint8_t  stream  = tx ? u->res->dma_tx_stream  : u->res->dma_rx_stream;
+    uint32_t channel = tx ? u->res->dma_tx_channel : u->res->dma_rx_channel;
+
+    int dma_idx = dma_res_idx(u->res->dma);
+    if(dma_idx < 0) return BMML_INVALID_ARG;
+
+    DMA_Stream_TypeDef *s;
+    bmml_status_t st = bmml_dma_acquire_stream(u->res->dma, stream,
+                           tx ? usart_dma_tx_isr : usart_dma_rx_isr, u, &s);
+    if(st != BMML_OK) return st;
+
+    *acquired     = true;
+    d->res        = &dma_res[dma_idx];
+    d->stream     = s;
+    d->num_stream = stream;
+    d->channel    = channel;
+    *d->res->rcc_reg |= d->res->rcc_mask;
+    return BMML_OK;
+}
+
+/* Move everything the RX DMA wrote since the last call into rx_buffer.
+   Called from the IDLE, DMA half-transfer and DMA transfer-complete paths, which can preempt each
+   other (different IRQs/priorities), so the whole thing is a critical section. */
+static void usart_dma_rx_drain(usart_t *u) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    uint16_t head = (uint16_t)(u->dma_rx_len - (uint16_t)u->dma_rx.stream->NDTR);
+    if(head >= u->dma_rx_len) head = 0U;       /* NDTR was just reloaded */
+
+    while(u->dma_rx_tail != head) {
+        ring_buffer_push(u->rx_buffer, &u->dma_rx_buf[u->dma_rx_tail]);   /* a full buffer counts in ->dropped */
+        if(++u->dma_rx_tail >= u->dma_rx_len) u->dma_rx_tail = 0U;
+    }
+    __set_PRIMASK(primask);
+}
+
+static bmml_status_t usart_it_enqueue(usart_t *u, const uint8_t *data, size_t len) {
+    if(len == 0U) return BMML_OK;
+    USART_TypeDef *r = u->res->reg;
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if(r->CR3 & USART_CR3_DMAT) { __set_PRIMASK(primask); return BMML_BUSY; }
+
+    size_t free_space = (u->tx_buffer->size - 1U) - ring_buffer_count(u->tx_buffer);
+    if(len > free_space)        { __set_PRIMASK(primask); return BMML_BUSY; }   /* never truncate silently */
+
+    for(size_t i = 0; i < len; i++) ring_buffer_push(u->tx_buffer, &data[i]);
+    u->busy = true;
+    r->CR1 |= USART_CR1_TXEIE;                 /* TXE is 1 when idle, the ISR fires at once */
+
+    __set_PRIMASK(primask);
+    return BMML_OK;
 }
 
 bmml_status_t usart_acquire(USART_TypeDef *reg, uint32_t br, usart_callback_t cb, usart_t **out) {
