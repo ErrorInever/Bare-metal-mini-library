@@ -14,6 +14,8 @@ bool ring_buffer_init(RingBuffer_t *rb, void *storage, size_t size, size_t eleme
     rb->element_size = element_size;
     rb->head = 0;
     rb->tail = 0;
+    rb->overflow = false;
+    rb->dropped  = 0;
     return true;
 }
 
