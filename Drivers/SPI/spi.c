@@ -289,70 +289,51 @@ static void spi_dma_rx_isr(void *ctx) {
 // IT and Errors
 static void SPIx_IRQHandler(int slot) {
     spi_t *spi = &spi_pool[slot];
-    uint32_t sr = spi->res->reg->SR;
-    uint32_t cr2 = spi->res->reg->CR2;
+    if(!spi->busy) return;
 
-    // check errors
-    if(cr2 & SPI_CR2_ERRIE) {
-        // Overrun
-        if(sr & SPI_SR_OVR) {
-            // reset OVR
-            (void)spi->res->reg->DR;
-            (void)spi->res->reg->SR;
-            spi_abort_error(spi, SPI_SR_OVR);
-        }
-        // mode fault
-        if(sr & SPI_SR_MODF) {
-            spi->res->reg->CR1 &= ~SPI_CR1_SPE;
-            spi_abort_error(spi, SPI_SR_MODF);
-        }
+    SPI_TypeDef *r = spi->res->reg;
+    uint32_t sr  = r->SR;
+    uint32_t cr2 = r->CR2;
+
+    /* 1) errors: abort and leave immediately */
+    uint32_t err = sr & (SPI_SR_OVR | SPI_SR_MODF);
+    if((cr2 & SPI_CR2_ERRIE) && err) {
+        if(err & SPI_SR_OVR)  { (void)r->DR; (void)r->SR; }   /* clear OVR: read DR, then SR */
+        if(err & SPI_SR_MODF) r->CR1 &= ~SPI_CR1_SPE;         /* clear MODF: SR read + CR1 write.
+                                                                 Hardware also cleared MSTR, so
+                                                                 re-acquire the SPI afterwards. */
+        spi_abort_error(spi, err);
+        return;
     }
-    // RXNE
-    if((sr & SPI_SR_RXNE) && (cr2 & SPI_CR2_RXNEIE)) {
-        if(spi->rx_cnt > 0) { // if have anything to read
-            if(spi->p_rx_ptr != NULL) { // if we read (rx mode)
-                *spi->p_rx_ptr = spi->res->reg->DR;
-                spi->p_rx_ptr++;
-            } else { // if we just send (tx mode) we must read from DR
-                volatile uint8_t dummy = spi->res->reg->DR;
-                (void)dummy;
-            }
-            spi->rx_cnt--;
+    if(spi->xfer_dma) return;                  /* DMA mode: only errors are handled here */
 
-            // (mode RX) enable TXEIE for send dummy byte
-            if(spi->rx_cnt > 0) spi->res->reg->CR2 |= SPI_CR2_TXEIE;
-        }
+    /* 2) RXNE: read a byte (store it, or throw it away in TX-only mode) */
+    if((sr & SPI_SR_RXNE) && (cr2 & SPI_CR2_RXNEIE) && spi->rx_cnt > 0) {
+        uint8_t b = (uint8_t)r->DR;
+        if(spi->p_rx_ptr != NULL) *spi->p_rx_ptr++ = b;
+        spi->rx_cnt--;
+        /* RX-only: the next dummy byte can go out now */
+        if(spi->p_tx_ptr == NULL && spi->rx_cnt > 0) r->CR2 |= SPI_CR2_TXEIE;
     }
 
-    // TXE
+    /* 3) TXE: send the next byte */
     if((sr & SPI_SR_TXE) && (cr2 & SPI_CR2_TXEIE)) {
-        if(spi->tx_cnt > 0) { // if have anything to read
-            if(spi->p_tx_ptr != NULL) { // if tx mode
-                spi->res->reg->DR = *spi->p_tx_ptr;
-                spi->p_tx_ptr++;
-            } else { // if we just read (rx mode) we must send dummy bute in DR
-                spi->res->reg->DR = 0xFF;
-                spi->res->reg->CR2 &= ~SPI_CR2_TXEIE;
-                spi->res->reg->CR2 |= SPI_CR2_RXNEIE;
+        if(spi->tx_cnt > 0) {
+            if(spi->p_tx_ptr != NULL) {
+                r->DR = *spi->p_tx_ptr++;
+            } else {                           /* RX-only: dummy byte */
+                r->DR = 0xFF;
+                r->CR2 |= SPI_CR2_RXNEIE;
             }
             spi->tx_cnt--;
-        } else { // if tx_cnt == 0
-            spi->res->reg->CR2 &= ~SPI_CR2_TXEIE;
         }
+        if(spi->tx_cnt == 0 || spi->p_tx_ptr == NULL) r->CR2 &= ~SPI_CR2_TXEIE;
     }
 
-    // end of transaction
+    /* 4) done */
     if(spi->tx_cnt == 0 && spi->rx_cnt == 0) {
-        spi->res->reg->CR2 &= ~(SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN | SPI_CR2_ERRIE);
-        // waiting bus is empty
-        while(spi->res->reg->SR & SPI_SR_BSY);
-        // reset DR
-        if(spi->current_ctx->rx_buff == NULL) {
-            volatile uint32_t dummy = spi->res->reg->DR;
-            dummy = spi->res->reg->SR; // OVR
-            (void)dummy;
-        }
-        if(spi->callback != NULL) spi->callback(spi);
+        spi_wait_idle(r);
+        spi_complete(spi, BMML_OK, 0U);
     }
 }
 
