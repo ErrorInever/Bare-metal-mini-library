@@ -162,6 +162,32 @@ bmml_status_t spi_it_transmit(spi_t *spi, spi_transaction_t *tr) {
     return BMML_OK;
 }
 
+static bmml_status_t spi_dma_acquire_dir(spi_t *spi, bool tx) {
+    bool *acquired = tx ? &spi->dma_tx_acquired : &spi->dma_rx_acquired;
+    if(*acquired) return BMML_OK;
+
+    const spi_res_t *res = spi->res;
+    dma_t *d = tx ? &spi->dma_tx : &spi->dma_rx;
+    uint8_t  stream  = tx ? res->dma_tx_stream  : res->dma_rx_stream;
+    uint32_t channel = tx ? res->dma_tx_channel : res->dma_rx_channel;
+
+    int dma_idx = dma_res_idx(res->dma);
+    if(dma_idx < 0) return BMML_INVALID_ARG;
+
+    DMA_Stream_TypeDef *s;
+    bmml_status_t st = bmml_dma_acquire_stream(res->dma, stream,
+                           tx ? spi_dma_tx_isr : spi_dma_rx_isr, spi, &s);
+    if(st != BMML_OK) return st;
+
+    *acquired     = true;
+    d->res        = &dma_res[dma_idx];
+    d->stream     = s;
+    d->num_stream = stream;
+    d->channel    = channel;
+    *d->res->rcc_reg |= d->res->rcc_mask;
+    return BMML_OK;
+}
+
 bmml_status_t spi_dma_transmit(spi_t *spi, spi_transaction_t *tr) {
     if(spi == NULL) return BMML_INVALID_ARG;
     if(tr == NULL) return BMML_INVALID_ARG;
