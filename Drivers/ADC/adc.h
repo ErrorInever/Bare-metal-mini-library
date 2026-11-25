@@ -51,7 +51,7 @@ typedef struct adc_t {
     adc_channel_config_t *adc_channels;         /**< Pointer to user-allocated array containing channel-specific settings. */
     uint8_t num_channels;                       /**< Number of active channels defined in the array (Maximum: 6). */
     adc_callback_t callback;
-    uint16_t *data_buffer;      /**< Pointer to destination memory buffer (RAM) for automated DMA streaming. */
+    uint16_t *data_buffer;                      /**< Destination buffer (RAM), at least num_channels elements. DMA runs circular over exactly num_channels samples: data_buffer[i] = channel adc_channels[i]; the callback fires after every complete scan. Must outlive the handle. */
 } adc_t;
 
 
