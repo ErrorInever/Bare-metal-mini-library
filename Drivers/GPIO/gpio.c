@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "bmml_res_gpio.h"
+#include "bmml_irq_shared.h"
 #include "stm32f446xx.h"
 
 
@@ -98,6 +99,7 @@ bmml_status_t gpio_enable_exti_isr(const gpio_t *gpio, edge_type_t edge) {
     EXTI->PR = (1U << gpio->pin);
     
     // Enable interrupt in NVIC
+    NVIC_SetPriority(gpio_exti_irqn(gpio->pin), BMML_IRQ_PRIORITY);
     NVIC_EnableIRQ(gpio_exti_irqn(gpio->pin));
 
     return BMML_OK;

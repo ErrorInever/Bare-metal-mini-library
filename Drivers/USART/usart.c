@@ -2,6 +2,7 @@
 #include "bmml_dma_shared.h"
 #include "bmml_ring_buffer.h"
 #include "bmml_status.h"
+#include "bmml_irq_shared.h"
 #include "stm32f446xx.h"
 #include <stdint.h>
 #include "bmml_utilities.h"
@@ -155,7 +156,7 @@ bmml_status_t usart_acquire(USART_TypeDef *reg, uint32_t br, usart_callback_t cb
     reg->BRR = brr;
     reg->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE | USART_CR1_IDLEIE;
 
-    NVIC_SetPriority(u->res->usart_irq, 5);
+    NVIC_SetPriority(u->res->usart_irq, BMML_IRQ_PRIORITY);
     NVIC_ClearPendingIRQ(u->res->usart_irq);
     NVIC_EnableIRQ(u->res->usart_irq);
 

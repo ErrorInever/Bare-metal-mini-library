@@ -12,7 +12,7 @@
 
 #define TIMER_BASIC_COUNT 2U   // TIM6, TIM7
 #define TIMER_PWM_COUNT 12U    // TIM1..TIM5, TIM8..TIM14
-#define TIMER_IRQ_PRIORITY 5U
+#define TIMER_IRQ_PRIORITY BMML_IRQ_PRIORITY
 
 static void timer6_isr_part(void);
 

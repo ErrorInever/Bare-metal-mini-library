@@ -1,5 +1,6 @@
 #include "bmml_dma_shared.h"
 #include "bmml_status.h"
+#include "bmml_irq_shared.h"
 #include "stm32f446xx.h"
 #include <stddef.h>
 
@@ -48,7 +49,12 @@ bmml_status_t bmml_dma_acquire_stream(DMA_TypeDef *dma, uint8_t stream, dma_stre
     if(taken_table[stream]) return BMML_BUSY;
     taken_table[stream] = true;
     owner_table[stream] = (dma_owner_t){ .cb = cb, .ctx = ctx };
-    NVIC_EnableIRQ((dma == DMA1) ? dma1_irqn[stream] : dma2_irqn[stream]);
+    {
+        const IRQn_Type irqn = (dma == DMA1) ? dma1_irqn[stream] : dma2_irqn[stream];
+        NVIC_SetPriority(irqn, BMML_IRQ_PRIORITY);
+        NVIC_ClearPendingIRQ(irqn);
+        NVIC_EnableIRQ(irqn);
+    }
     if(out_stream) *out_stream = streams[stream];
 
     return BMML_OK;

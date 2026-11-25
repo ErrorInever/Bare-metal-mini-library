@@ -2,6 +2,7 @@
 #include "bmml_dma_shared.h"
 #include "bmml_res_spi.h"
 #include "bmml_status.h"
+#include "bmml_irq_shared.h"
 #include "stm32f446xx.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -81,8 +82,9 @@ bmml_status_t spi_acquire(SPI_TypeDef *reg, spi_baudrate_t br, spi_callback_t cb
                         | SPI_CR1_SSI);                         // Need set to 1 for manual control SSM
 
     // Enable NVIC
+    NVIC_SetPriority(spi->res->spi_irq, BMML_IRQ_PRIORITY);
+    NVIC_ClearPendingIRQ(spi->res->spi_irq);
     NVIC_EnableIRQ(spi->res->spi_irq);
-    NVIC_SetPriority(spi->res->spi_irq, 5);
 
     spi_enable(reg);
 

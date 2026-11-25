@@ -3,13 +3,14 @@
 #include "bmml_res_i2c.h"
 #include "bmml_status.h"
 #include "bmml_utilities.h"
+#include "bmml_irq_shared.h"
 #include "stm32f446xx.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
  
 #define I2C_COUNT               3
-#define I2C_IRQ_PRIORITY        5U
+#define I2C_IRQ_PRIORITY        BMML_IRQ_PRIORITY
 #define I2C_STOP_WAIT_LOOPS     20000U
  
 #define I2C_ERR_MASK  (I2C_SR1_BERR | I2C_SR1_ARLO | I2C_SR1_AF | \
