@@ -255,31 +255,29 @@ bmml_status_t timer_pwm_acquire(TIM_TypeDef *reg, uint32_t freq_hz, timer_pwm_t 
     if(idx < 0) return BMML_INVALID_ARG;
 
     const timer_res_t *res = &timer_res[idx];
-    uint32_t timer_clk = timer_get_clock_hz(res);   // not need RCC-enabled
-    uint32_t arr_max = res->is_32bit ? 0xFFFFFFFFU : 0xFFFFU;
 
-    if(freq_hz > timer_clk) return BMML_INVALID_ARG;  // freq not reacheable
-
-    uint32_t psc = 0, arr = 0;
-    bool found = false;
-    do {
-        uint64_t denom = (uint64_t)(psc + 1U) * freq_hz;   // uint64_t — without overflow
-        uint64_t candidate = timer_clk / denom;
-        if (candidate > 0 && candidate <= arr_max) { arr = (uint32_t)candidate; found = true; break; }
-        psc++;
-    } while (psc <= 0xFFFFU);
-
-    if (!found) return BMML_INVALID_ARG;
+    uint32_t psc, arr;
+    bmml_status_t st = timer_calc_freq(res, freq_hz, &psc, &arr);
+    if(st != BMML_OK) return st;                       /* nothing claimed yet */
 
     timer_pwm_taken[slot] = true;
     timer_pwm_t *timer = &timer_pwm_pool[slot];
+    *timer = (timer_pwm_t){0};
     timer->res = res;
 
     *res->rcc_reg |= res->rcc_mask;
-    res->reg->PSC = psc;
-    res->reg->ARR = arr - 1U;
-    res->reg->EGR |= TIM_EGR_UG;
-    res->reg->SR &= ~TIM_SR_UIF;
+    (void)*res->rcc_reg;
+
+    timer_reset_regs(reg);
+    reg->CCER  = 0U;
+    reg->CCMR1 = 0U;
+    if(res->num_channels > 2U) reg->CCMR2 = 0U;
+    if(reg == TIM1 || reg == TIM8) reg->BDTR &= ~TIM_BDTR_MOE;
+
+    reg->PSC = psc;
+    reg->ARR = arr;
+    reg->EGR = TIM_EGR_UG;
+    reg->SR  = 0U;
 
     if(out) *out = timer;
     return BMML_OK;
@@ -296,15 +294,13 @@ bmml_status_t timer_pwm_release(timer_pwm_t *timer) {
 
     reg->CR1 &= ~TIM_CR1_CEN;
 
-    for(int ch = 0; ch < 4; ch++) {
-        if(timer->channel_enabled_mask & (1U << ch)) {
-            reg->CCER &= ~channel_enable[ch];
-        }
-    }
+    reg->CR1 &= ~TIM_CR1_CEN;
+    if(reg == TIM1 || reg == TIM8) reg->BDTR &= ~TIM_BDTR_MOE;   /* outputs off first */
 
-    if(reg == TIM1 || reg == TIM8) {
-        reg->BDTR &= ~TIM_BDTR_MOE;
-    }
+    reg->CCER  = 0U;                                   /* all channel outputs off */
+    reg->CCMR1 = 0U;
+    if(timer->res->num_channels > 2U) reg->CCMR2 = 0U;
+    timer_reset_regs(reg);
 
     timer_pwm_taken[slot] = false;
     timer_pwm_pool[slot] = (timer_pwm_t){0};
@@ -316,11 +312,10 @@ bmml_status_t timer_pwm_channel_config(timer_pwm_t *timer, uint8_t channel, uint
     if(timer == NULL || timer->res == NULL) return BMML_INVALID_ARG;
     if(channel < 1 || channel > timer->res->num_channels) return BMML_INVALID_ARG;
     if(timer->channel_enabled_mask & (1U << (channel - 1))) return BMML_BUSY;
-    if(duty > 100U) duty = 100U;
 
     TIM_TypeDef *reg  = timer->res->reg;
 
-    uint32_t ccr_val = ((reg->ARR + 1U) * duty) / 100U;
+    uint32_t ccr_val = pwm_duty_to_ccr(reg, duty);
     
     switch (channel) {
         case 1: reg->CCR1 = ccr_val; reg->CCMR1 = (reg->CCMR1 & ~TIM_CCMR1_OC1M) | (6U << TIM_CCMR1_OC1M_Pos) | TIM_CCMR1_OC1PE; break;
@@ -358,9 +353,8 @@ bmml_status_t timer_pwm_channel_disable(const timer_pwm_t *timer, uint8_t channe
 bmml_status_t timer_pwm_set_duty(const timer_pwm_t *timer, uint8_t channel, uint32_t duty) {
     if(timer == NULL || timer->res == NULL || channel < 1 || channel > 4) return BMML_INVALID_ARG;
     if(!(timer->channel_enabled_mask & (1U << (channel - 1)))) return BMML_ERROR;
-    if(duty > 100U) duty = 100U;
 
-    uint32_t ccr_val = ((timer->res->reg->ARR + 1U) * duty) / 100U;
+    uint32_t ccr_val = pwm_duty_to_ccr(timer->res->reg, duty);     /* in set_duty */
     switch(channel) {
         case 1: timer->res->reg->CCR1 = ccr_val; break;
         case 2: timer->res->reg->CCR2 = ccr_val; break;
