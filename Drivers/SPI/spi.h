@@ -74,7 +74,7 @@ typedef struct spi_t {
     volatile spi_transaction_t *current_ctx;
     volatile bool tx_phase_done;
     volatile bool rx_phase_done;
-    bool busy;
+    volatile bool busy;                        /**< A transfer is in progress; written by the ISR, polled by user code. */
     bool xfer_dma;                             /**<true: current transfer is DMA, the IRQ handler only handles errors */
     spi_callback_t callback;
 
