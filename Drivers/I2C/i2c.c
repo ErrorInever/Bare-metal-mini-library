@@ -220,6 +220,56 @@ bmml_status_t i2c_release(i2c_t *i2c) {
 }
  
 /* ------------------------------------------------------------------------- */
+/*  Abort                                                                    */
+/* ------------------------------------------------------------------------- */
+
+bmml_status_t i2c_abort(i2c_t *i2c) {
+    if(i2c == NULL || i2c->res == NULL) return BMML_INVALID_ARG;
+
+    I2C_TypeDef *r = i2c->res->reg;
+
+    /* The whole abort is one critical section: neither the I2C ISRs nor the DMA ISRs
+       (which call i2c_finish) may run while the state machine is torn down. */
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if(!i2c->busy) {                                   /* nothing to abort (or it just finished) */
+        __set_PRIMASK(primask);
+        return BMML_OK;
+    }
+
+    /* 1) no more DMA traffic */
+    if(i2c->dma_tx_acquired) i2c_dma_stop(&i2c->dma_tx);
+    if(i2c->dma_rx_acquired) i2c_dma_stop(&i2c->dma_rx);
+
+    /* 2) software reset of the peripheral: drops BUSY/MSL, pending START/STOP, all flags.
+          The timing registers are saved and restored, so the bus speed stays as acquired. */
+    const uint32_t cr2   = r->CR2 & I2C_CR2_FREQ;
+    const uint32_t ccr   = r->CCR;
+    const uint32_t trise = r->TRISE;
+
+    r->CR1 = 0U;
+    r->CR1 = I2C_CR1_SWRST;
+    r->CR1 = 0U;
+    r->CR2   = cr2;                                    /* interrupts / DMA requests are off again */
+    r->CCR   = ccr;
+    r->TRISE = trise;
+    i2c_enable(r);
+
+    NVIC_ClearPendingIRQ(i2c->res->irqn_ev);
+    NVIC_ClearPendingIRQ(i2c->res->irqn_er);
+
+    /* 3) the handle is idle again; the user callback is NOT called for an aborted transaction */
+    i2c->state    = I2C_ERROR;
+    i2c->status   = BMML_TIMEOUT;
+    i2c->hw_error = 0U;
+    i2c->busy     = false;
+
+    __set_PRIMASK(primask);
+    return BMML_OK;
+}
+
+/* ------------------------------------------------------------------------- */
 /*  Transfer start                                                           */
 /* ------------------------------------------------------------------------- */
  
