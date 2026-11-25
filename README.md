@@ -71,13 +71,20 @@ usart_printf(uart, "Hello from STM32_BMML\r\n");
 
 This is an active work in progress. Known issues and planned work:
 
-- [ ] Fix the I2C state machine for 1-byte and 2-byte reads and for DMA completion
-- [ ] Complete ADC DMA setup (buffer length, `PAR`/`M0AR`/`NDTR`)
-- [ ] Review SPI DMA/IT completion paths and the SPI4 DMA mapping
-- [ ] Event types in callbacks (done / error / RX idle)
-- [ ] Consistent NVIC priority policy
-- [ ] Clock configuration (PLL) in `main.c`
-- [ ] Hardware tests: USART loopback, SPI MISO↔MOSI, I2C with a sensor/EEPROM
+Done (see `AUDIT.md` for details; everything below was checked by code review and compilation only, not on hardware yet):
+
+- [x] I2C state machine for 1-, 2- and N-byte reads and for DMA completion; `i2c_abort()` for a hung transaction
+- [x] ADC DMA setup (`PAR`/`M0AR`/`NDTR`; `data_buffer` must hold at least `num_channels` samples, one DMA transfer = one scan)
+- [x] USART DMA RX (circular buffer, drained on half/full buffer and on IDLE)
+- [x] SPI DMA/IT completion paths and the SPI4 DMA mapping reviewed
+- [x] Consistent NVIC priority policy (`BMML_IRQ_PRIORITY` in `bmml_irq_shared.h`)
+- [x] Clock frequencies are re-read from RCC (`SystemCoreClockUpdate()`), `TIMPRE` is respected
+
+Open:
+
+- [ ] Hardware tests: USART loopback, SPI MISO↔MOSI, I2C with a sensor/EEPROM, ADC/USART DMA
+- [ ] Clock configuration (PLL) in `main.c` (the drivers already follow whatever clock is configured)
+- [ ] Event types in callbacks for SPI/I2C (done / error / RX idle); ADC already reports `adc->status`
 - [ ] DAC second channel, ADC timer trigger mode
 
 ## License
