@@ -24,7 +24,7 @@ typedef enum {
     USART_EVENT_ERROR      /**< Line error (ORE/NE/FE/PE) or DMA error, see usart->hw_error. */
 } usart_event_t;
 
-typedef void (*usart_callback_t)(usart_t *usart);
+typedef void (*usart_callback_t)(usart_t *usart, usart_event_t event);
 
 typedef struct usart_t {
     const usart_res_t *res;

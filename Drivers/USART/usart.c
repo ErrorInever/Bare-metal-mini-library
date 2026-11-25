@@ -120,9 +120,8 @@ static bmml_status_t usart_it_enqueue(usart_t *u, const uint8_t *data, size_t le
 }
 
 bmml_status_t usart_acquire(USART_TypeDef *reg, uint32_t br, usart_callback_t cb, usart_t **out) {
-    if(reg == NULL) return BMML_INVALID_ARG;
-    if(br == 0) return BMML_INVALID_ARG;
     if(out) *out = NULL;
+    if(reg == NULL || br == 0U) return BMML_INVALID_ARG;
 
     int slot = usart_slot(reg);
     if(slot < 0) return BMML_INVALID_ARG;
@@ -131,144 +130,105 @@ bmml_status_t usart_acquire(USART_TypeDef *reg, uint32_t br, usart_callback_t cb
     int idx = usart_res_idx(reg);
     if(idx < 0) return BMML_INVALID_ARG;
 
+    /* Validate the baud rate BEFORE claiming the slot */
+    const bool apb2 = (reg == USART1 || reg == USART6);
+    const uint32_t clk = apb2 ? get_apb2_clock_hz() : get_apb1_clock_hz();
+    const uint32_t brr = (clk + br / 2U) / br;          /* oversampling by 16, rounded to nearest */
+    if(brr < 16U || brr > 0xFFFFU) return BMML_INVALID_ARG;
+
     usart_taken[slot] = true;
-    usart_t *usart = &usart_pool[slot];
-    usart->res = &usart_res[idx];
-    usart->callback = cb;
+    usart_t *u = &usart_pool[slot];
+    *u = (usart_t){0};
+    u->res       = &usart_res[idx];
+    u->callback  = cb;
+    u->rx_buffer = &rx_handler[slot];
+    u->tx_buffer = &tx_handler[slot];
+    ring_buffer_init(u->rx_buffer, rx_storage[slot], RING_BUF_SIZE, sizeof(uint8_t));
+    ring_buffer_init(u->tx_buffer, tx_storage[slot], RING_BUF_SIZE, sizeof(uint8_t));
 
-    // Init ringbuffers for USART
-    usart->rx_buffer = &rx_handler[slot];
-    usart->tx_buffer = &tx_handler[slot];
+    *u->res->rcc_reg |= u->res->rcc_mask;
+    (void)*u->res->rcc_reg;                              /* RCC write-to-effect delay */
 
-    ring_buffer_init(usart->rx_buffer, rx_storage[slot], 
-        RING_BUF_SIZE, sizeof(uint8_t));
-    usart->rx_buffer = &rx_handler[slot];
+    reg->CR1 = 0U;                                       /* clean state, UE = 0 */
+    reg->CR2 = 0U;
+    reg->CR3 = 0U;
+    reg->BRR = brr;
+    reg->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE | USART_CR1_IDLEIE;
 
-    ring_buffer_init(usart->tx_buffer, tx_storage[slot], 
-        RING_BUF_SIZE, sizeof(uint8_t));
-    usart->tx_buffer = &tx_handler[slot];
+    NVIC_SetPriority(u->res->usart_irq, 5);
+    NVIC_ClearPendingIRQ(u->res->usart_irq);
+    NVIC_EnableIRQ(u->res->usart_irq);
 
-    // RCC
-    *usart->res->rcc_reg |= usart->res->rcc_mask;
+    usart_enable(reg);
+    (void)reg->SR; (void)reg->DR;                        /* drop stale flags */
 
-    bool bus = (reg == USART1 || reg == USART6) ? true : false;
-    uint32_t bus_freq;
-    if(bus) {
-        bus_freq = get_apb2_clock_hz();
-    } else {
-        bus_freq = get_apb1_clock_hz();
-    }
-    usart->res->reg->BRR = (bus_freq + br / 2) / br;
-    usart->res->reg->CR1 |= USART_CR1_TE |                           // Enable transmitter
-                            USART_CR1_RE |                           // Enable receiver
-                            USART_CR1_RXNEIE;                        // Enable interrupt on receive
-    usart->res->reg->CR1 &= ~USART_CR1_TXEIE;                        // Disable TXE 
-
-    // Enable NVIC
-    NVIC_EnableIRQ(usart->res->usart_irq);
-    NVIC_SetPriority(usart->res->usart_irq, 5);
-
-    usart_enable(usart->res->reg);
-
-    if(out) *out = usart;
-
+    if(out) *out = u;
     return BMML_OK;
 }
 
-bmml_status_t usart_release(usart_t *usart) {
-    if(usart == NULL || usart->res == NULL) return BMML_INVALID_ARG;
-    if(usart->busy) return BMML_BUSY;
+bmml_status_t usart_release(usart_t *u) {
+    if(u == NULL || u->res == NULL) return BMML_INVALID_ARG;
+    if(u->busy) return BMML_BUSY;                        /* wait for TX_DONE, do not cut the tail */
 
-    int slot = usart_slot(usart->res->reg);
+    USART_TypeDef *r = u->res->reg;
+    int slot = usart_slot(r);
     if(slot < 0 || !usart_taken[slot]) return BMML_INVALID_ARG;
 
-    usart->res->reg->CR1 &= ~(USART_CR1_RXNEIE | USART_CR1_TXEIE | USART_CR1_IDLEIE);
-    usart->res->reg->CR3 &= ~(USART_CR3_DMAT | USART_CR3_DMAR);
-    NVIC_DisableIRQ(usart->res->usart_irq);
-    usart_disable(usart->res->reg);
+    NVIC_DisableIRQ(u->res->usart_irq);
+    r->CR1 = 0U;                                         /* also clears UE and all IRQ enables */
+    r->CR3 = 0U;
 
-    if(usart->dma_tx_acquired) {
-        dma_disable_stream(usart->dma_tx.stream);
-        dma_clear_stream_flags(usart->dma_tx.res->reg, usart->dma_tx.num_stream);
-        bmml_dma_release_stream(usart->dma_tx.res->reg, usart->dma_tx.num_stream);
+    if(u->dma_tx_acquired) {
+        usart_dma_stop(&u->dma_tx);
+        bmml_dma_release_stream(u->dma_tx.res->reg, u->dma_tx.num_stream);
     }
-    if(usart->dma_rx_acquired) {
-        dma_disable_stream(usart->dma_rx.stream);
-        dma_clear_stream_flags(usart->dma_rx.res->reg, usart->dma_rx.num_stream);
-        bmml_dma_release_stream(usart->dma_rx.res->reg, usart->dma_rx.num_stream);
+    if(u->dma_rx_acquired) {
+        usart_dma_stop(&u->dma_rx);
+        bmml_dma_release_stream(u->dma_rx.res->reg, u->dma_rx.num_stream);
     }
+
+    *u->res->rcc_reg &= ~u->res->rcc_mask;
 
     usart_taken[slot] = false;
-    usart_pool[slot] = (usart_t){0};
+    usart_pool[slot]  = (usart_t){0};
     return BMML_OK;
 }
 
 
 
-bmml_status_t usart_it_transmit(usart_t *usart, const char *data) {
-    if(usart == NULL || usart->res == NULL) return BMML_INVALID_ARG;
-    if(usart->busy) return BMML_BUSY;
-
-    __disable_irq();
-    while(*data) {
-        char ch = *data++;
-        ring_buffer_push(usart->tx_buffer, &ch);
-    }
-    __enable_irq();
-
-    // Enable IT
-    usart->busy = true;
-    usart->res->reg->CR1 |= USART_CR1_TXEIE;
-
-    return BMML_OK;
+bmml_status_t usart_it_transmit(usart_t *u, const char *data) {
+    if(u == NULL || u->res == NULL || data == NULL) return BMML_INVALID_ARG;
+    return usart_it_enqueue(u, (const uint8_t *)data, strlen(data));
 }
 
-bmml_status_t usart_dma_transmit(usart_t *usart, const char *data, uint16_t size) {
-    if(usart == NULL || usart->res == NULL) return BMML_INVALID_ARG;
-    if(usart->busy) return BMML_BUSY;
-    if(data == NULL || size == 0) return BMML_INVALID_ARG;
 
-    if(!usart->dma_tx_acquired) {
-        int idx = usart_res_idx(usart->res->reg);
-        if(idx < 0) return BMML_INVALID_ARG;
-        int dma_idx = dma_res_idx(usart_res[idx].dma);
-        if(dma_idx < 0) return BMML_INVALID_ARG;
+bmml_status_t usart_dma_transmit(usart_t *u, const char *data, uint16_t size) {
+    if(u == NULL || u->res == NULL) return BMML_INVALID_ARG;
+    if(data == NULL || size == 0U) return BMML_INVALID_ARG;
+    if(u->busy) return BMML_BUSY;
 
-        DMA_Stream_TypeDef *dma_stream;
-        bmml_status_t st = bmml_dma_acquire_stream(usart_res[idx].dma,
-            usart_res[idx].dma_tx_stream, usart_dma_tx_isr, usart, &dma_stream);
-        if(st != BMML_OK) return st;
+    bmml_status_t st = usart_dma_acquire_dir(u, true);
+    if(st != BMML_OK) return st;
 
-        usart->dma_tx_acquired = true;
-        usart->dma_tx.res = &dma_res[dma_idx];
-        usart->dma_tx.stream = dma_stream;
-        usart->dma_tx.num_stream = usart_res[idx].dma_tx_stream;
-        usart->dma_tx.channel = usart_res[idx].dma_tx_channel;
+    if(dma_disable_stream(u->dma_tx.stream) != BMML_OK) return BMML_TIMEOUT;
+    dma_clear_stream_flags(u->dma_tx.res->reg, u->dma_tx.num_stream);
 
-        *usart->dma_tx.res->rcc_reg |= usart->dma_tx.res->rcc_mask;
-    }
+    USART_TypeDef *r = u->res->reg;
+    u->busy     = true;
+    u->status   = BMML_OK;
+    u->hw_error = 0U;
 
-    usart->busy = true;
-    usart->tx_phase_done = false;
+    u->dma_tx.stream->PAR  = (uint32_t)&r->DR;
+    u->dma_tx.stream->M0AR = (uint32_t)data;
+    u->dma_tx.stream->NDTR = size;
+    u->dma_tx.stream->CR   = (u->dma_tx.channel << DMA_SxCR_CHSEL_Pos)
+                           | DMA_SxCR_MINC
+                           | DMA_SxCR_DIR_0                    /* memory -> peripheral */
+                           | DMA_SxCR_TCIE | DMA_SxCR_TEIE;
 
-    dma_disable_stream(usart->dma_tx.stream);
-    dma_clear_stream_flags(usart->dma_tx.res->reg, usart->dma_tx.num_stream);
-
-    usart->dma_tx.stream->PAR  = (uint32_t)&usart->res->reg->DR;
-    usart->dma_tx.stream->M0AR = (uint32_t)data;
-    usart->dma_tx.stream->NDTR = size;
-
-    uint32_t tx_cr = 0U;
-    tx_cr |= (usart->dma_tx.channel << DMA_SxCR_CHSEL_Pos);
-    tx_cr |= DMA_SxCR_MINC;
-    tx_cr |= DMA_SxCR_DIR_0;  // Memory to peripheral
-    tx_cr |= DMA_SxCR_TCIE | DMA_SxCR_TEIE;
-
-    usart->dma_tx.stream->CR = tx_cr;
-    usart->dma_tx.stream->CR |= DMA_SxCR_EN;
-
-    usart->res->reg->CR3 |= USART_CR3_DMAT;
-    
+    r->SR = ~USART_SR_TC;                                      /* drop a stale TC */
+    u->dma_tx.stream->CR |= DMA_SxCR_EN;
+    r->CR3 |= USART_CR3_DMAT;
     return BMML_OK;
 }
 
@@ -330,154 +290,156 @@ bmml_status_t usart_dma_start_rx(usart_t *usart, uint8_t *buf, uint16_t buf_len)
     return BMML_OK;
 }
 
-static bmml_status_t usart_it_enqueue(usart_t *usart, const uint8_t *data, size_t len) {
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    for(size_t i = 0; i < len; i++) {
-        uint8_t b = data[i];
-        ring_buffer_push(usart->tx_buffer, &b);
-    }
-    usart->busy = true;
-    usart->res->reg->CR1 |= USART_CR1_TXEIE;
-    __set_PRIMASK(primask);
-    return BMML_OK;
-}
-
-bmml_status_t usart_printf(usart_t *usart, const char *format, ...) {
-    if(usart == NULL || usart->res == NULL || format == NULL) return BMML_INVALID_ARG;
-    if(usart->res->reg->CR3 & USART_CR3_DMAT) return BMML_BUSY;
+bmml_status_t usart_printf(usart_t *u, const char *format, ...) {
+    if(u == NULL || u->res == NULL || format == NULL) return BMML_INVALID_ARG;
 
     char buf[USART_PRINTF_BUF_SIZE];
-
     va_list args;
     va_start(args, format);
     int n = vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
 
-    if(n < 0) return BMML_ERROR;
+    if(n < 0)  return BMML_ERROR;
     if(n == 0) return BMML_OK;
 
-    bool truncated = ((size_t)n >= sizeof(buf));
-    size_t len = truncated ? sizeof(buf) - 1 : (size_t)n;
+    const bool truncated = ((size_t)n >= sizeof(buf));
+    const size_t len = truncated ? sizeof(buf) - 1U : (size_t)n;
 
-    usart_it_enqueue(usart, (const uint8_t *)buf, len);
+    bmml_status_t st = usart_it_enqueue(u, (const uint8_t *)buf, len);   /* BUSY / DMA check is inside */
+    if(st != BMML_OK) return st;
+    return truncated ? BMML_ERROR : BMML_OK;                             /* ERROR = sent, but cut off */
+}
 
-    return truncated ? BMML_ERROR : BMML_OK;
+bmml_status_t usart_dma_stop_rx(usart_t *u) {
+    if(u == NULL || u->res == NULL) return BMML_INVALID_ARG;
+    if(!u->dma_rx_active) return BMML_OK;
+
+    USART_TypeDef *r = u->res->reg;
+    r->CR3 &= ~USART_CR3_DMAR;
+    (void)dma_disable_stream(u->dma_rx.stream);
+    usart_dma_rx_drain(u);                     /* NDTR is frozen now, take the rest */
+    dma_clear_stream_flags(u->dma_rx.res->reg, u->dma_rx.num_stream);
+    u->dma_rx_active = false;
+    r->CR1 |= USART_CR1_RXNEIE;                /* back to interrupt reception */
+    return BMML_OK;
+}
+
+size_t usart_read(usart_t *u, uint8_t *dst, size_t max) {
+    if(u == NULL || u->rx_buffer == NULL || dst == NULL) return 0U;
+    size_t n = 0U;
+    while(n < max && ring_buffer_pop(u->rx_buffer, &dst[n])) n++;
+    return n;
 }
 
 static void USARTx_IRQHandler(int slot) {
-    usart_t *usart = &usart_pool[slot];
-    uint32_t sr = usart->res->reg->SR;
-    uint32_t cr1 = usart->res->reg->CR1;
+    usart_t *u = &usart_pool[slot];
+    USART_TypeDef *r = u->res->reg;
+    uint32_t sr  = r->SR;
+    uint32_t cr1 = r->CR1;
+    bool dr_read = false;
 
-    // Error flags
-    if(sr & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE)) {
-        uint32_t err = sr & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE);
-        (void)usart->res->reg->SR;       // read SR
-        (void)usart->res->reg->DR;       // read DR (reset error flags)
-        usart->hw_error = err;
-        if(usart->callback != NULL) usart->callback(usart);
+    /* 1) line errors. SR read + DR read clears them. In DMA mode this read can take one byte
+          away from the DMA, but we are already in an error state. */
+    uint32_t err = sr & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE);
+    if(err) {
+        (void)r->DR;
+        dr_read = true;
+        sr &= ~USART_SR_RXNE;                  /* that byte is gone: do not read DR again below */
+        u->hw_error = err;
+        usart_notify(u, USART_EVENT_ERROR);
     }
 
-    // DMA
-    // IDLE line detection
-    if((sr & USART_SR_IDLE) && (cr1 & USART_CR1_IDLEIE)) {
-        // reset IDLE flag
-        (void)usart->res->reg->SR;
-        (void)usart->res->reg->DR;
-
-        // calculate the number of bytes received
-        uint16_t dma_head = RING_BUF_SIZE - usart->dma_rx.stream->NDTR; // get current head
-        uint16_t num_byte = 0U;
-        if(dma_head != usart->dma_rx_tail) { // if not empty
-            if(dma_head > usart->dma_rx_tail) {
-                num_byte = dma_head - usart->dma_rx_tail;
-            } else {
-                num_byte = (RING_BUF_SIZE - usart->dma_rx_tail) + dma_head;
-            }
-            // push into ring buffer
-            for(uint16_t i = 0; i < num_byte; i++) {
-                uint8_t byte = rx_storage[slot][usart->dma_rx_tail];
-                ring_buffer_push(usart->rx_buffer, &byte);
-                usart->dma_rx_tail++;
-                if(usart->dma_rx_tail >= RING_BUF_SIZE) {
-                    usart->dma_rx_tail = 0;
-                }
-            }
-        }
-        
-        if(usart->callback != NULL) {
-            usart->callback(usart);
-        }
-        usart->dma_rx_tail = dma_head;
-    }
-
-    // IT
+    /* 2) received byte (IT mode; RXNEIE is off while the DMA is active) */
     if((sr & USART_SR_RXNE) && (cr1 & USART_CR1_RXNEIE)) {
-        uint8_t ch = usart_receive_byte(usart->res->reg);
-        // TODO: add overflow lost data printf
-        ring_buffer_push(usart->rx_buffer, &ch);
-    } 
-    else if((sr & USART_SR_TXE) && (cr1 & USART_CR1_TXEIE)) {
-        // send byte
-        uint8_t out_data;
-        if(ring_buffer_pop(usart->tx_buffer, &out_data)) {
-            usart->res->reg->DR = out_data;
+        uint8_t ch = usart_receive_byte(r);
+        dr_read = true;
+        ring_buffer_push(u->rx_buffer, &ch);   /* when full: rx_buffer->dropped++ */
+    }
+
+    /* 3) TX register empty: next byte from the queue */
+    if((sr & USART_SR_TXE) && (cr1 & USART_CR1_TXEIE)) {
+        uint8_t b;
+        if(ring_buffer_pop(u->tx_buffer, &b)) {
+            r->DR = b;
         } else {
-            usart->res->reg->CR1 &= ~USART_CR1_TXEIE; // buffer is empty, reset TXEIE flag
-            usart->busy = false;
-            if(usart->callback != NULL) usart->callback(usart);
+            r->CR1 &= ~USART_CR1_TXEIE;
+            r->CR1 |= USART_CR1_TCIE;          /* now wait until the last byte has really left */
         }
     }
-}
 
-static void usart_abort_error(usart_t *usart, uint32_t hw_error) {
-    usart->res->reg->CR3 &= ~(USART_CR3_DMAT | USART_CR3_DMAR);
-    usart->res->reg->CR1 &= ~USART_CR1_IDLEIE;
-    usart->status = BMML_ERROR;
-    usart->hw_error = hw_error;
-    
-    usart->busy = false;
-
-    if(usart->dma_tx_acquired) {
-        dma_disable_stream(usart->dma_tx.stream);
-        bmml_dma_release_stream(usart->dma_tx.res->reg, usart->dma_tx.num_stream);
-        dma_clear_stream_flags(usart->dma_tx.res->reg, usart->dma_tx.num_stream);
-        usart->dma_tx_acquired = false;   // см. пункт C
-    }
-    if(usart->dma_rx_acquired) {
-        dma_disable_stream(usart->dma_rx.stream);
-        bmml_dma_release_stream(usart->dma_rx.res->reg, usart->dma_rx.num_stream);
-        dma_clear_stream_flags(usart->dma_rx.res->reg, usart->dma_rx.num_stream);
-        usart->dma_rx_acquired = false;
+    /* 4) transmission complete (IT queue drained or DMA finished) */
+    if((sr & USART_SR_TC) && (cr1 & USART_CR1_TCIE)) {
+        r->CR1 &= ~USART_CR1_TCIE;
+        r->SR = ~USART_SR_TC;
+        if(is_empty(u->tx_buffer)) {           /* new data may have been queued in the meantime */
+            u->status = BMML_OK;
+            u->busy   = false;
+            usart_notify(u, USART_EVENT_TX_DONE);
+        }
     }
 
-    if(usart->callback != NULL) usart->callback(usart);
+    /* 5) IDLE: the line was quiet for one frame -> a burst of data ended */
+    if((sr & USART_SR_IDLE) && (cr1 & USART_CR1_IDLEIE)) {
+        if(!dr_read) (void)r->DR;              /* IDLE is cleared by SR read (above) + DR read */
+        if(u->dma_rx_active) usart_dma_rx_drain(u);
+        if(!is_empty(u->rx_buffer)) usart_notify(u, USART_EVENT_RX);
+    }
 }
 
-static void DMA_finish(usart_t *usart) {
-    usart->res->reg->CR3 &= ~USART_CR3_DMAT;
-    usart->status = BMML_OK;
-    usart->busy   = false;
-    if(usart->callback != NULL) usart->callback(usart);
+/* ---- DMA error handling: each direction is aborted on its own ---- */
+
+static void usart_dma_tx_abort(usart_t *u, uint32_t hw_error) {
+    USART_TypeDef *r = u->res->reg;
+    r->CR3 &= ~USART_CR3_DMAT;
+    r->CR1 &= ~USART_CR1_TCIE;
+    usart_dma_stop(&u->dma_tx);
+    u->status   = BMML_ERROR;
+    u->hw_error = hw_error;
+    u->busy     = false;
+    usart_notify(u, USART_EVENT_ERROR);
 }
 
+static void usart_dma_rx_abort(usart_t *u, uint32_t hw_error) {
+    USART_TypeDef *r = u->res->reg;
+    r->CR3 &= ~USART_CR3_DMAR;
+    usart_dma_rx_drain(u);                     /* keep what was already received */
+    usart_dma_stop(&u->dma_rx);
+    u->dma_rx_active = false;
+    r->CR1 |= USART_CR1_RXNEIE;                /* fall back to interrupt reception */
+    u->status   = BMML_ERROR;
+    u->hw_error = hw_error;
+    usart_notify(u, USART_EVENT_ERROR);
+}
 
 static void usart_dma_tx_isr(void *ctx) {
-    usart_t *usart = (usart_t *)ctx;
-    uint32_t teif = dma_teif_mask(usart->res->tx_tcif_mask);
-    if(dma_check_flag(&usart->dma_tx, teif, false)) {
-        usart_abort_error(usart, teif);
-    } else if(dma_check_flag(&usart->dma_tx, usart->res->tx_tcif_mask, true)) {
-        DMA_finish(usart);
+    usart_t *u = (usart_t *)ctx;
+    const uint32_t teif = dma_teif_mask(u->res->tx_tcif_mask);
+
+    if(dma_check_flag(&u->dma_tx, teif, true)) {
+        usart_dma_tx_abort(u, teif);
+        return;
+    }
+    if(dma_check_flag(&u->dma_tx, u->res->tx_tcif_mask, true)) {
+        /* The last byte went into DR but is not on the wire yet: USART TC finishes the job */
+        u->res->reg->CR3 &= ~USART_CR3_DMAT;
+        u->res->reg->CR1 |= USART_CR1_TCIE;
     }
 }
 
 static void usart_dma_rx_isr(void *ctx) {
-    usart_t *usart = (usart_t *)ctx;
-    uint32_t teif = dma_teif_mask(usart->res->rx_tcif_mask);
-    if(dma_check_flag(&usart->dma_rx, teif, false)) {
-        usart_abort_error(usart, teif);
+    usart_t *u = (usart_t *)ctx;
+    const uint32_t teif = dma_teif_mask(u->res->rx_tcif_mask);
+
+    if(dma_check_flag(&u->dma_rx, teif, true)) {
+        usart_dma_rx_abort(u, teif);
+        return;
+    }
+    /* No short-circuit: both flags must be checked and cleared */
+    bool ht = dma_check_flag(&u->dma_rx, dma_htif_mask(u->res->rx_tcif_mask), true);
+    bool tc = dma_check_flag(&u->dma_rx, u->res->rx_tcif_mask, true);
+    if(ht || tc) {
+        usart_dma_rx_drain(u);
+        if(!is_empty(u->rx_buffer)) usart_notify(u, USART_EVENT_RX);
     }
 }
 
