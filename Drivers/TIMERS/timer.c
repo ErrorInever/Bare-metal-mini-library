@@ -38,11 +38,18 @@ static int timer_pwm_slot(const TIM_TypeDef *reg) {
     return idx - 2;             // TIM8..TIM14 (idx 7..13) -> 5..11
 }
 
+/* Timer kernel clock (RM0390, "Clock tree" / RCC_DCKCFGR.TIMPRE):
+     TIMPRE = 0: PCLK if the APB prescaler is /1, otherwise 2 x PCLK
+     TIMPRE = 1: HCLK if the APB prescaler is /1, /2 or /4, otherwise 4 x PCLK */
 static uint32_t timer_get_clock_hz(const timer_res_t *res) {
     uint32_t pclk = res->on_apb2 ? get_apb2_clock_hz() : get_apb1_clock_hz();
     uint32_t ppre = res->on_apb2 ? ((RCC->CFGR >> RCC_CFGR_PPRE2_Pos) & 0x7)
                                   : ((RCC->CFGR >> RCC_CFGR_PPRE1_Pos) & 0x7);
-    return (ppre < 4) ? pclk : pclk * 2;
+    if(RCC->DCKCFGR & RCC_DCKCFGR_TIMPRE) {
+        if(ppre < 6U) return pclk << (ppre < 4U ? 0 : (ppre - 3U));   /* PCLK x (1|2|4) == HCLK */
+        return pclk * 4U;
+    }
+    return (ppre < 4U) ? pclk : pclk * 2U;
 }
 
 /* Bring the common registers to a known state: a timer may have been used before
