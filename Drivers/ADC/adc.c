@@ -55,6 +55,7 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     if(out) *out = NULL;
     if(reg == NULL || dma == NULL) return BMML_INVALID_ARG;
     if (channels == NULL || num_channels == 0 || num_channels > 6) return BMML_INVALID_ARG;
+    if (data_buffer == NULL) return BMML_INVALID_ARG;   // buffer must hold at least num_channels samples
 
     if (mode == TIME_TRIGGER) return BMML_INVALID_ARG;   // TODO: not implemented — reject before touching any resource
     if (mode != CONTINUOUS && mode != SCAN) return BMML_INVALID_ARG; 
@@ -73,7 +74,7 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
 
     // Acquire DMA stream
     DMA_Stream_TypeDef *dma_stream;
-    bmml_status_t st = bmml_dma_acquire_stream(dma, stream, adc_dma_isr, NULL, &dma_stream);
+    bmml_status_t st = bmml_dma_acquire_stream(dma, stream, adc_dma_isr, &adc_pool[slot], &dma_stream);
     if(st != BMML_OK) return st;
 
     // Init
@@ -111,6 +112,12 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     cr |= (1U << DMA_SxCR_PSIZE_Pos);                           // size periph 16 bit (half-word)
     adc->dma.stream->CR = cr;
 
+    // DMA addresses and length (stream is still disabled here).
+    // One TC event = one complete scan: NDTR = num_channels, data_buffer[i] <-> adc_channels[i].
+    adc->dma.stream->PAR  = (uint32_t)&adc->res->reg->DR;
+    adc->dma.stream->M0AR = (uint32_t)data_buffer;
+    adc->dma.stream->NDTR = num_channels;
+
     // ADC configure
     // Setup freq (max 18Mhz)
     ADC->CCR &= ~ADC_CCR_ADCPRE; // reset prescaler
@@ -143,6 +150,7 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     // Enable DMA
     adc->dma.stream->CR |= DMA_SxCR_EN;
 
+    if(out) *out = adc;
     return BMML_OK;
 }
 
