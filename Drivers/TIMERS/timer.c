@@ -192,20 +192,32 @@ bmml_status_t timer_basic_release(timer_basic_t *timer) {
     return BMML_OK;
 }
 
-bmml_status_t timer_basic_delay_poling(const timer_basic_t *timer, uint32_t ms) {
+bmml_status_t timer_basic_delay_polling(const timer_basic_t *timer, uint32_t ms) {
+    if(timer == NULL || timer->res == NULL) return BMML_INVALID_ARG;
+    if(ms > UINT32_MAX / 10U) return BMML_INVALID_ARG;
+    if(ms == 0U) return BMML_OK;
+
     TIM_TypeDef *reg = timer->res->reg;
-    uint32_t wait_ticks = ms * 10U;
-    if(wait_ticks > (uint32_t)(reg->ARR) + 1U) return BMML_INVALID_ARG; // delay is more than ARR
+    const uint32_t period     = reg->ARR + 1U;        /* the counter runs 0..ARR */
+    const uint32_t wait_ticks = ms * 10U;              /* 0.1 ms tick, see timer_basic_acquire() */
 
-    bool was_disabled = !(reg->CR1 & TIM_CR1_CEN);
-    if(was_disabled) reg->CR1 |= TIM_CR1_CEN;
-    
-    reg->DIER &= ~TIM_DIER_UIE; // temporarily disable interrupt while polling
-    uint16_t start_tick = (uint16_t)reg->CNT;
-    while((uint16_t)(reg->CNT - start_tick) < wait_ticks);
-    reg->DIER |= TIM_DIER_UIE;
+    const bool was_stopped = !(reg->CR1 & TIM_CR1_CEN);
+    const bool had_irq     = (reg->DIER & TIM_DIER_UIE) != 0U;
 
-    if(was_disabled) reg->CR1 &= ~TIM_CR1_CEN;
+    if(was_stopped) reg->CR1 |= TIM_CR1_CEN;
+    reg->DIER &= ~TIM_DIER_UIE;                        /* no callback in the middle of the delay */
+
+    uint32_t prev = reg->CNT;
+    uint32_t elapsed = 0U;
+    while(elapsed < wait_ticks) {
+        uint32_t now = reg->CNT;
+        elapsed += (now >= prev) ? (now - prev) : (now + period - prev);   /* handles the wrap at ARR */
+        prev = now;
+    }
+
+    reg->SR = ~TIM_SR_UIF;                             /* drop updates that happened during the delay */
+    if(had_irq) reg->DIER |= TIM_DIER_UIE;
+    if(was_stopped) reg->CR1 &= ~TIM_CR1_CEN;
     return BMML_OK;
 }
 
