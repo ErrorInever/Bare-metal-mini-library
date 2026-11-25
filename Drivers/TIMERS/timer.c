@@ -127,7 +127,7 @@ bmml_status_t timer_basic_set_freq_hz(const timer_basic_t *timer, uint32_t freq_
 
 bmml_status_t timer_basic_acquire(TIM_TypeDef *reg, const uint32_t period_ms, timer_basic_callback_t cb, timer_basic_t **out) {
     if(out) *out = NULL;
-    if (period_ms == 0 || period_ms > TIMER_BASIC_MAX_PERIOD_MS) return BMML_INVALID_ARG;
+    if(period_ms == 0 || period_ms > TIMER_BASIC_MAX_PERIOD_MS) return BMML_INVALID_ARG;
 
     int slot = timer_basic_slot(reg);
     if(slot < 0) return BMML_INVALID_ARG;
@@ -136,57 +136,59 @@ bmml_status_t timer_basic_acquire(TIM_TypeDef *reg, const uint32_t period_ms, ti
     int idx = timer_res_idx(reg);
     if(idx < 0) return BMML_INVALID_ARG;
 
-    // Register and init timer object
+    const uint32_t clk = timer_get_clock_hz(&timer_res[idx]);
+    if(clk < 10000U) return BMML_INVALID_ARG;           /* no 10 kHz tick possible */
+
     timer_basic_taken[slot] = true;
     timer_basic_t *timer = &timer_basic_pool[slot];
-    timer->res = &timer_res[idx];
+    *timer = (timer_basic_t){0};
+    timer->res      = &timer_res[idx];
     timer->callback = cb;
 
-    // RCC
     *timer->res->rcc_reg |= timer->res->rcc_mask;
-    // Configure PSC and ARR
-    uint32_t freq = timer_get_clock_hz(timer->res);
-    timer->res->reg->PSC = (freq / 10000U) - 1U;
-    timer->res->reg->ARR = (period_ms * 10U) - 1U;
-    // Forced update
-    timer->res->reg->EGR |= TIM_EGR_UG;
-    timer->res->reg->SR &= ~TIM_SR_UIF; // reset flag
-    // Enable interrupt 
-    timer->res->reg->DIER |= TIM_DIER_UIE;
-    // Register specified IRQ for TIM6
-    if(timer->res->reg == TIM6) {
-        bmml_register_tim6_dac_handler(timer6_isr_part, NULL);
-    }
-    // Enable IRQ in NVIC
-    NVIC_EnableIRQ(timer->res->irqn);
+    (void)*timer->res->rcc_reg;                         /* RCC write-to-effect delay */
 
+    timer_reset_regs(reg);
+    reg->PSC = (clk / 10000U) - 1U;                     /* 10 kHz tick = 0.1 ms */
+    reg->ARR = (period_ms * 10U) - 1U;
+    reg->EGR = TIM_EGR_UG;                              /* load PSC/ARR (interrupts are still off) */
+    reg->SR  = 0U;
 
-    if(out != NULL) {
-        *out = timer;
+    /* No callback -> no interrupt at all (pure delay / trigger timer) */
+    if(cb != NULL) {
+        if(reg == TIM6) bmml_register_tim6_dac_handler(timer6_isr_part, NULL);
+        reg->DIER = TIM_DIER_UIE;
+        NVIC_SetPriority(timer->res->irqn, TIMER_IRQ_PRIORITY);
+        NVIC_ClearPendingIRQ(timer->res->irqn);
+        NVIC_EnableIRQ(timer->res->irqn);
     }
 
+    if(out) *out = timer;
     return BMML_OK;
 }
 
 bmml_status_t timer_basic_release(timer_basic_t *timer) {
     if(timer == NULL || timer->res == NULL) return BMML_INVALID_ARG;
 
-    TIM_TypeDef *reg  = timer->res->reg;
-    IRQn_Type irqn = timer->res->irqn;
-
+    TIM_TypeDef *reg = timer->res->reg;
     int slot = timer_basic_slot(reg);
     if(slot < 0) return BMML_INVALID_ARG;
-    if(!timer_basic_taken[slot]) return BMML_INVALID_ARG;  // double-release
+    if(!timer_basic_taken[slot]) return BMML_INVALID_ARG;      /* double release */
 
-    reg->CR1  &= ~TIM_CR1_CEN;
-    reg->DIER &= ~TIM_DIER_UIE;
+    const IRQn_Type irqn = timer->res->irqn;
+    const bool had_irq = (timer->callback != NULL);
 
-    if(reg == TIM6) bmml_unregister_tim6_dac_handler(true, false);
-    NVIC_DisableIRQ(irqn);
+    timer_reset_regs(reg);                                     /* CEN, UIE, MMS ... all off */
+
+    /* Touch NVIC only if we enabled it: TIM6_DAC_IRQn is shared with the DAC */
+    if(had_irq) {
+        if(reg == TIM6) bmml_unregister_tim6_dac_handler(true, false);
+        NVIC_DisableIRQ(irqn);
+        NVIC_ClearPendingIRQ(irqn);
+    }
 
     timer_basic_taken[slot] = false;
     timer_basic_pool[slot]  = (timer_basic_t){0};
-
     return BMML_OK;
 }
 
