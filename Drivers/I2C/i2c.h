@@ -89,6 +89,21 @@ bmml_status_t i2c_dma_transmit(i2c_t *i2c, i2c_transaction_t *tr);
 /** @brief DMA read-only transfer: requires tx_len == 0 and rx_len > 0. */
 bmml_status_t i2c_dma_receive(i2c_t *i2c, i2c_transaction_t *tr);
 
+/**
+ * @brief Abort the running transaction (for a hung bus / a slave that never answers).
+ *
+ * There is no built-in timeout: the application decides when a transaction took too long
+ * (e.g. a basic-timer callback or a poll loop in main) and calls this function. It stops the DMA
+ * streams, resets the I2C peripheral (BUSY/MSL, pending START/STOP and all flags are dropped, bus
+ * speed is kept) and makes the handle usable again: i2c->busy == false, i2c->status == BMML_TIMEOUT.
+ * The callback is NOT called for the aborted transaction. Safe to call from main or an ISR;
+ * does nothing (BMML_OK) if no transaction is running.
+ *
+ * @note The software reset cannot release a line that a slave holds low. If SDA stays low after
+ *       the abort, the application has to clock SCL (up to 9 pulses) on the pin before retrying.
+ */
+bmml_status_t i2c_abort(i2c_t *i2c);
+
 static inline void i2c_reset_off(I2C_TypeDef *reg) { reg->CR1 &= ~I2C_CR1_PE; }
 static inline void i2c_enable(I2C_TypeDef *reg)    { reg->CR1 |= I2C_CR1_PE; }
 
