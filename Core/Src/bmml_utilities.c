@@ -10,6 +10,9 @@ static const uint8_t  apb_div[] = { 1,1,1,1, 2,4,8,16 };
 
 
 static uint32_t get_hclk_hz(void) {
+    /* SystemCoreClock is only a cached value: re-read it from RCC, so a PLL configured after
+       reset (or at any later time) is always reflected in BRR / CCR / PSC calculations. */
+    SystemCoreClockUpdate();
     uint32_t hpre = (RCC->CFGR >> RCC_CFGR_HPRE_Pos) & 0xF;
     return SystemCoreClock / ahb_div[hpre];
 }
