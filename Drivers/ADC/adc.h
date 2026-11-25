@@ -18,7 +18,8 @@ typedef struct adc_t adc_t;
 
 
 /**
- * @brief User-defined callback function pointer type for DMA transfer complete events.
+ * @brief User-defined callback, called from the DMA ISR after every complete scan (adc->status == BMML_OK)
+ *        or after a DMA transfer error (adc->status == BMML_ERROR, conversion has stopped).
  * @param[in] adc Pointer to the active ADC handle structure invoking the callback.
  */
 typedef void (*adc_callback_t)(adc_t *adc);
@@ -40,7 +41,7 @@ typedef enum {
  */
 typedef struct {
     uint8_t channel_number;                     /**< Hardware channel index (e.g., 0 for PA0, 1 for PA1). */
-    uint8_t sampling_time;                      /**< Sample time selection bit pattern (defines capacitor charge cycles). */
+    uint8_t sampling_time;                      /**< Reserved, currently unused: the global sample_time argument of adc_dma_acquire() (0..7) applies to every channel. */
 } adc_channel_config_t;
 
 
@@ -51,7 +52,8 @@ typedef struct adc_t {
     adc_channel_config_t *adc_channels;         /**< Pointer to user-allocated array containing channel-specific settings. */
     uint8_t num_channels;                       /**< Number of active channels defined in the array (Maximum: 6). */
     adc_callback_t callback;
-    uint16_t *data_buffer;                      /**< Destination buffer (RAM), at least num_channels elements. DMA runs circular over exactly num_channels samples: data_buffer[i] = channel adc_channels[i]; the callback fires after every complete scan. Must outlive the handle. */
+    volatile bmml_status_t status;              /**< BMML_OK, or BMML_ERROR after a DMA transfer error (the stream is then stopped: release and acquire again). Check it in the callback. */
+    uint16_t *data_buffer;      /**< Destination buffer (RAM), at least num_channels elements. DMA runs circular over exactly num_channels samples: data_buffer[i] = channel adc_channels[i]; the callback fires after every complete scan. Must outlive the handle. */
 } adc_t;
 
 
