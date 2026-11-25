@@ -56,6 +56,9 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     if(reg == NULL || dma == NULL) return BMML_INVALID_ARG;
     if (channels == NULL || num_channels == 0 || num_channels > 6) return BMML_INVALID_ARG;
     if (data_buffer == NULL) return BMML_INVALID_ARG;   // buffer must hold at least num_channels samples
+    if (sample_time > 7U) return BMML_INVALID_ARG;      // SMPx is a 3-bit field: a larger value would corrupt neighbouring channels
+    for (uint8_t i = 0; i < num_channels; i++)
+        if (channels[i].channel_number > 18U) return BMML_INVALID_ARG;   // ADC1..3 have channels 0..18
 
     if (mode == TIME_TRIGGER) return BMML_INVALID_ARG;   // TODO: not implemented — reject before touching any resource
     if (mode != CONTINUOUS && mode != SCAN) return BMML_INVALID_ARG; 
@@ -119,13 +122,17 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     adc->dma.stream->NDTR = num_channels;
 
     // ADC configure
+    // Start from the reset state: CONT, SCAN, EOCS, EXTEN ... may be left over from a previous user.
+    // ADON = 0 here, so nothing is converting. RES = 00 (12 bit) comes with it.
+    adc->res->reg->CR1 = 0U;
+    adc->res->reg->CR2 = 0U;
+    adc->res->reg->SR  = 0U;
+    adc->status = BMML_OK;
+
     // Setup freq (max 18Mhz)
     ADC->CCR &= ~ADC_CCR_ADCPRE; // reset prescaler
     uint32_t adcpre = bmml_calc_adc_prescaler(get_apb2_clock_hz());
     ADC->CCR |= (adcpre << ADC_CCR_ADCPRE_Pos);
-    // Setup resolution
-    adc->res->reg->CR1 &= ~ADC_CR1_RES; // max resolution 12 bit (00)
-
     // Setup Queue
     bmml_status_t queue_status = adc_configure_queue_simple(adc, sample_time);
     if (queue_status != BMML_OK) {
@@ -135,12 +142,8 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
         return queue_status;
     }
 
-    if(mode == CONTINUOUS) {
-        adc->res->reg->CR2 |= ADC_CR2_CONT;
-    }else if (mode == TIME_TRIGGER) {
-        // TODO: TIM (EXTEN/EXTSEL)
-        return BMML_INVALID_ARG;
-    }
+    // SCAN = one pass of the sequence per adc_start(); TIME_TRIGGER is rejected above (TODO)
+    if(mode == CONTINUOUS) adc->res->reg->CR2 |= ADC_CR2_CONT;
 
     // Allow DMA request generation for ADC
     // Allow continuous generation of requests (DDS = DMA Disable Selection)
@@ -161,7 +164,8 @@ bmml_status_t adc_dma_release(adc_t *adc) {
     if(slot < 0) return BMML_INVALID_ARG;
     if(!adc_taken[slot]) return BMML_INVALID_ARG;
 
-    adc->res->reg->CR2 &= ~(ADC_CR2_DMA | ADC_CR2_DDS | ADC_CR2_ADON);
+    adc->res->reg->CR2 = 0U;                    // ADON, DMA, DDS, CONT ... all off
+    adc->res->reg->CR1 = 0U;                    // SCAN off
 
     if(dma_disable_stream(adc->dma.stream) != BMML_OK) return BMML_TIMEOUT;
 
@@ -183,6 +187,9 @@ static void adc_dma_isr(void *ctx) {
 
     if(*isr & teif) {
         *ifcr = teif;
+        // On a transfer error the hardware has already switched the stream off: no more data will
+        // arrive. Tell the user via adc->status; recover with adc_dma_release() + adc_dma_acquire().
+        adc->status = BMML_ERROR;
         if(adc->callback != NULL) adc->callback(adc);
         return;
     }
