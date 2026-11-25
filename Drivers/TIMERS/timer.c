@@ -213,7 +213,7 @@ bmml_status_t timer_basic_delay_poling(const timer_basic_t *timer, uint32_t ms) 
 static void timer6_isr_part(void) {
     if(!timer_basic_taken[0]) return;
     if(TIM6->SR & TIM_SR_UIF) {
-        TIM6->SR &= ~TIM_SR_UIF;
+        TIM6->SR = ~TIM_SR_UIF;
         if(timer_basic_pool[0].callback != NULL) {
             timer_basic_pool[0].callback();
         }
@@ -223,7 +223,7 @@ static void timer6_isr_part(void) {
 void TIM7_IRQHandler(void) { 
     if(!timer_basic_taken[1]) return;
     if(TIM7->SR & TIM_SR_UIF) {
-        TIM7->SR &= ~TIM_SR_UIF;
+        TIM7->SR = ~TIM_SR_UIF;
         if(timer_basic_pool[1].callback != NULL) {
             timer_basic_pool[1].callback();
         }
