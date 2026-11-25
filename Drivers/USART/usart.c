@@ -233,59 +233,42 @@ bmml_status_t usart_dma_transmit(usart_t *u, const char *data, uint16_t size) {
 }
 
 bmml_status_t usart_dma_start_rx(usart_t *usart, uint8_t *buf, uint16_t buf_len) {
-    if(usart == NULL) return BMML_INVALID_ARG;
-    if(buf_len <= 0) return BMML_INVALID_ARG;
+    if(usart == NULL || usart->res == NULL) return BMML_INVALID_ARG;
+    if(buf == NULL || buf_len == 0U) return BMML_INVALID_ARG;
+    if(usart->dma_rx_active) return BMML_BUSY;          /* stop it first with usart_dma_stop_rx() */
 
+    bmml_status_t st = usart_dma_acquire_dir(usart, false);
+    if(st != BMML_OK) return st;
+
+    /* The stream must be off before PAR/M0AR/NDTR/CR are touched */
+    if(dma_disable_stream(usart->dma_rx.stream) != BMML_OK) return BMML_TIMEOUT;
+    dma_clear_stream_flags(usart->dma_rx.res->reg, usart->dma_rx.num_stream);
+
+    USART_TypeDef *r = usart->res->reg;
+
+    /* IT reception off first, so the RXNE ISR and the DMA never compete for DR */
+    r->CR1 &= ~USART_CR1_RXNEIE;
+
+    /* State used by usart_dma_rx_drain(): must be valid BEFORE the stream runs */
+    usart->dma_rx_buf  = buf;
+    usart->dma_rx_len  = buf_len;
     usart->dma_rx_tail = 0U;
+    usart->dma_rx_active = true;
 
-    if(!usart->dma_rx_acquired) {
-        int idx = usart_res_idx(usart->res->reg);
-        if(idx < 0) return BMML_INVALID_ARG;
-        int dma_idx = dma_res_idx(usart_res[idx].dma);
-        if(dma_idx < 0) return BMML_INVALID_ARG;
-
-        DMA_Stream_TypeDef *dma_stream;
-        bmml_status_t st = bmml_dma_acquire_stream(usart_res[idx].dma,
-            usart_res[idx].dma_rx_stream, usart_dma_rx_isr, usart, &dma_stream);
-        if(st != BMML_OK) return st;
-
-        usart->dma_rx_acquired = true;
-        usart->dma_rx.res = &dma_res[dma_idx];
-        usart->dma_rx.stream = dma_stream;
-        usart->dma_rx.num_stream = usart_res[idx].dma_rx_stream;
-        usart->dma_rx.channel = usart_res[idx].dma_rx_channel;
-
-        *usart->dma_rx.res->rcc_reg |= usart->dma_rx.res->rcc_mask;
-        dma_disable_stream(usart->dma_rx.stream);
-        dma_clear_stream_flags(usart->dma_rx.res->reg, usart->dma_rx.num_stream);
-    }
-
-    usart->dma_rx.stream->PAR  = (uint32_t)&usart->res->reg->DR;
+    usart->dma_rx.stream->PAR  = (uint32_t)&r->DR;
     usart->dma_rx.stream->M0AR = (uint32_t)buf;
     usart->dma_rx.stream->NDTR = buf_len;
 
-    // configure DMA CR
-    uint32_t cr = 0U;
-    cr |= ((uint32_t)usart->res->dma_rx_channel << DMA_SxCR_CHSEL_Pos);     // select channel
-    cr |= DMA_SxCR_MINC;                                                    // enable memory increment
-    cr &= ~DMA_SxCR_PINC;                                                   // disable peripheral increment
-    cr &= ~DMA_SxCR_DIR;                                                    // direction peripheral to memory
-    cr |= DMA_SxCR_CIRC;                                                    // enable circular mode
-    cr |= DMA_SxCR_TEIE;
-
-    usart->res->reg->CR1 |= USART_CR1_TE | 
-                            USART_CR1_RE | 
-                            USART_CR1_IDLEIE | 
-                            USART_CR1_UE;
-
+    uint32_t cr = (usart->dma_rx.channel << DMA_SxCR_CHSEL_Pos)
+                | DMA_SxCR_MINC                         /* memory increment, peripheral fixed, P2M */
+                | DMA_SxCR_CIRC                         /* circular */
+                | DMA_SxCR_HTIE | DMA_SxCR_TCIE         /* drain on half / full buffer */
+                | DMA_SxCR_TEIE;
     usart->dma_rx.stream->CR = cr;
     usart->dma_rx.stream->CR |= DMA_SxCR_EN;
 
-    usart->res->reg->CR1 &= ~USART_CR1_RXNEIE;
-    // enable DMA in USART and irq IDLE line detection
-    usart->res->reg->CR3 |= USART_CR3_DMAR;
-    usart->res->reg->CR1 |= USART_CR1_IDLEIE;
-
+    r->CR1 |= USART_CR1_TE | USART_CR1_RE | USART_CR1_IDLEIE | USART_CR1_UE;
+    r->CR3 |= USART_CR3_DMAR;                           /* DMA requests from RXNE; IDLE drains the tail */
 
     return BMML_OK;
 }
