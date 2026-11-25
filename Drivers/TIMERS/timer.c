@@ -10,8 +10,9 @@
 #include <sys/types.h>
 
 
-#define TIMER_BASIC_COUNT 2   // TIM6, TIM7
-#define TIMER_PWM_COUNT 12    // TIM1..TIM5, TIM8..TIM14
+#define TIMER_BASIC_COUNT 2U   // TIM6, TIM7
+#define TIMER_PWM_COUNT 12U    // TIM1..TIM5, TIM8..TIM14
+#define TIMER_IRQ_PRIORITY 5U
 
 static void timer6_isr_part(void);
 
@@ -44,20 +45,40 @@ static uint32_t timer_get_clock_hz(const timer_res_t *res) {
     return (ppre < 4) ? pclk : pclk * 2;
 }
 
-// Find PSC/ARR for target update frequency. ticks = clk / freq must fit in 16x16 bit.
+/* Bring the common registers to a known state: a timer may have been used before
+   (MMS from the DAC, ARPE, OPM, leftover DIER ...) */
+static void timer_reset_regs(TIM_TypeDef *reg) {
+    reg->CR1  = 0U;
+    reg->CR2  = 0U;
+    reg->DIER = 0U;
+    reg->SR   = 0U;
+}
+
+
+/* PSC/ARR for a target frequency. The actual frequency is clk / ((psc+1) * (arr+1)) and can differ
+   slightly from freq_hz (integer division). ARR+1 is limited to 0xFFFF (16 bit) or 0xFFFFFFFF
+   (32 bit) so that CCR = ARR+1 (100% duty) always fits into the CCR register. */
 static bmml_status_t timer_calc_freq(const timer_res_t *res, uint32_t freq_hz,
                                      uint32_t *psc, uint32_t *arr) {
-    if(freq_hz == 0) return BMML_INVALID_ARG;
-    uint32_t ticks = timer_get_clock_hz(res) / freq_hz;
-    if(ticks < 2U) return BMML_INVALID_ARG;          // freq too high
+    if(freq_hz == 0U) return BMML_INVALID_ARG;
 
-    uint32_t p = (ticks - 1U) / 65536U;              // smallest PSC so that ARR fits 16 bit
-    if(p > 0xFFFFU) return BMML_INVALID_ARG;         // freq too low
-    uint32_t n = ticks / (p + 1U);                   // >= 2 always
+    const uint32_t ticks = timer_get_clock_hz(res) / freq_hz;   /* timer clocks per period */
+    if(ticks < 2U) return BMML_INVALID_ARG;                     /* frequency too high */
 
-    *psc = p;
+    const uint64_t max_ticks = res->is_32bit ? 0xFFFFFFFFULL : 0xFFFFULL;
+    const uint64_t p = ticks / (max_ticks + 1U);                /* smallest PSC that makes ARR fit */
+    if(p > 0xFFFFU) return BMML_INVALID_ARG;                    /* frequency too low */
+
+    const uint32_t n = ticks / (uint32_t)(p + 1U);              /* always >= 2 here */
+    *psc = (uint32_t)p;
     *arr = n - 1U;
     return BMML_OK;
+}
+
+/* Duty in percent -> CCR. 64-bit math: (ARR + 1) * duty overflows 32 bit on TIM2/TIM5. */
+static uint32_t pwm_duty_to_ccr(const TIM_TypeDef *reg, uint32_t duty) {
+    if(duty > 100U) duty = 100U;
+    return (uint32_t)((((uint64_t)reg->ARR + 1U) * duty) / 100U);
 }
 
 bmml_status_t timer_basic_acquire_trigger(TIM_TypeDef *reg, uint32_t freq_hz, timer_basic_t **out) {
