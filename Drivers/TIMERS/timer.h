@@ -9,6 +9,7 @@ extern "C" {
 #define TIMER_BASIC_MAX_PERIOD_MS 6553U     // ARR 16-bit @ 10kHz tick
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "stm32f446xx.h"
 #include "bmml_res_timer.h"
 #include "bmml_status.h"
@@ -37,7 +38,7 @@ typedef struct {
  * @brief Acquires and configures a basic timer (TIM6 or TIM7) with a periodic update event.
  *
  * Enables the peripheral clock, computes PSC/ARR for a fixed 10 kHz tick resolution (0.1 ms per tick),
- * arms the Update interrupt, and enables the corresponding NVIC vector. If `reg` is TIM6, this also
+ * If cb ! NULL enable Update-interrupt and NVIC, if cb == NULL interupts still disabled. If `reg` is TIM6, this also
  * registers the timer's ISR fragment with the shared TIM6/DAC vector dispatcher (see bmml_irq_shared.h).
  *
  * The timer is left stopped (CEN = 0); call timer_basic_start() to begin counting.
@@ -65,19 +66,20 @@ bmml_status_t timer_basic_release(timer_basic_t *timer);
 
 
 /**
- * @brief Blocking, polling-based delay using the timer's free-running counter.
+ * @brief Blocking, polling-based delay using the timer's counter.
  *
- * Temporarily starts the counter if it was stopped, disables the Update interrupt for the
- * duration of the wait (so a concurrently configured callback is not fired mid-delay), and busy-waits
- * until `ms` milliseconds have elapsed, measured against the timer's current tick rate.
+ * Starts the counter if it was stopped, suppresses the Update interrupt for the duration of the
+ * wait, then restores the previous state (a pending update flag is cleared first, so no stray
+ * callback). The delay may be longer than the timer period; polling must however run faster than
+ * one period (do not call it with a very short period while interrupts are heavily loaded).
  *
- * @pre The requested delay must fit within one period of the timer's currently configured ARR
- *      (i.e. `ms * 10 <= ARR + 1`); longer delays are rejected rather than silently wrapping.
- * @param[in] timer Handle previously obtained from timer_basic_acquire().
- * @param[in] ms    Delay duration in milliseconds.
- * @return BMML_OK on success, BMML_INVALID_ARG if the delay exceeds the timer's configured period.
+ * @pre The timer must come from timer_basic_acquire() (0.1 ms tick).
+ *      Timers created by timer_basic_acquire_trigger() have a different tick.
  */
-bmml_status_t timer_basic_delay_poling(const timer_basic_t *timer, uint32_t ms);
+bmml_status_t timer_basic_delay_polling(const timer_basic_t *timer, uint32_t ms);
+
+/** Deprecated alias for the old misspelled name. */
+#define timer_basic_delay_poling timer_basic_delay_polling
 
 
 /**
