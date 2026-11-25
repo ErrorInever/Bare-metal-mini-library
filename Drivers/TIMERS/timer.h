@@ -231,7 +231,12 @@ bmml_status_t timer_pwm_set_duty(const timer_pwm_t *timer, uint8_t channel, uint
  * @param[in,out] timer Handle to start; its `status` field is set to true.
  */
 static inline void timer_pwm_start(timer_pwm_t *timer) {
-    timer->res->reg->CR1 |= TIM_CR1_CEN;
+    TIM_TypeDef *reg = timer->res->reg;
+    if(!(reg->CR1 & TIM_CR1_CEN)) {
+        reg->EGR = TIM_EGR_UG;           /* move preloaded PSC/ARR/CCRx into the active registers */
+        reg->SR  = ~TIM_SR_UIF;
+        reg->CR1 |= TIM_CR1_CEN;
+    }
     timer->status = true;
 }
 

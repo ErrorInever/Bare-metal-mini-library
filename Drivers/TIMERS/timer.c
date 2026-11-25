@@ -97,19 +97,18 @@ bmml_status_t timer_basic_acquire_trigger(TIM_TypeDef *reg, uint32_t freq_hz, ti
 
     timer_basic_taken[slot] = true;
     timer_basic_t *timer = &timer_basic_pool[slot];
+    *timer = (timer_basic_t){0};
     timer->res = &timer_res[idx];
-    timer->callback = NULL;
-    timer->status = false;
 
     *timer->res->rcc_reg |= timer->res->rcc_mask;
-    (void)*timer->res->rcc_reg;                      // RCC write-to-effect delay
+    (void)*timer->res->rcc_reg;
 
-    reg->CR1 &= ~TIM_CR1_CEN;
-    reg->DIER = 0U;                                  // no interrupts
+    timer_reset_regs(reg);                             /* no interrupts, MMS cleared (the DAC sets it later) */
+    reg->CR1 = TIM_CR1_ARPE;                           /* PSC and ARR both preloaded: frequency changes are glitch-free */
     reg->PSC = psc;
     reg->ARR = arr;
-    reg->EGR = TIM_EGR_UG;                           // load PSC (do this BEFORE setting MMS)
-    reg->SR = 0U;
+    reg->EGR = TIM_EGR_UG;                             /* do this BEFORE MMS is set by the caller */
+    reg->SR  = 0U;
 
     if(out) *out = timer;
     return BMML_OK;
