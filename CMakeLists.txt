@@ -22,6 +22,21 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 project(${CMAKE_PROJECT_NAME} C ASM)
 
+# 1b. Files that come from your STM32 package and are not part of this repository.
+#     Fail early with a clear message instead of a cryptic compiler/linker error.
+set(BMML_EXTERNAL_FILES
+    Core/Src/system_stm32f4xx.c
+    startup_stm32f446xx.s
+    Core/STM32F446XX_FLASH.ld
+    Drivers/CMSIS/Include/core_cm4.h
+    Drivers/CMSIS/Device/ST/STM32F4xx/Include/stm32f446xx.h
+)
+foreach(f IN LISTS BMML_EXTERNAL_FILES)
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${f}")
+        message(FATAL_ERROR "Missing '${f}'. Copy it from your STM32 package (see README, section Build).")
+    endif()
+endforeach()
+
 # 2. Flags Cortex-M4
 add_compile_options(
     -mcpu=cortex-m4
