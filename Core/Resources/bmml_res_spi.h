@@ -44,10 +44,10 @@ static const spi_res_t spi_res[] = {
 
     { SPI4, DMA2, &RCC->APB2ENR, RCC_APB2ENR_SPI4EN, SPI4_IRQn, 
         1, 4, 0, 4, 
-        DMA_LISR_TCIF1, DMA_LISR_TCIF0 },               // TX: stream1 ch4    RX: stream3 ch5
+        DMA_LISR_TCIF1, DMA_LISR_TCIF0 },               // TX: DMA2 stream1 ch4   RX: DMA2 stream0 ch4 (alt: TX s4 ch5, RX s3 ch5)
 };
 
-// Get index of I2C res
+// Get index of SPI res
 static inline int spi_res_idx(const SPI_TypeDef *reg) {
     for(int i = 0; i < (int)SPI_RES_COUNT; i++) {
         if(spi_res[i].reg == reg) return i;
