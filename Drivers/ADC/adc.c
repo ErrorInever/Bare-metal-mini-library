@@ -104,7 +104,7 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
 
     // DMA config
     uint32_t cr = 0;
-    cr |= (adc->dma.channel << DMA_SxCR_CHSEL_Pos);             // select channel (7)
+    cr |= (adc->dma.channel << DMA_SxCR_CHSEL_Pos);             // select channel (ADC1: 0, ADC2: 1, ADC3: 2)
     cr |= DMA_SxCR_MINC;                                        // increment memory
     cr &= ~DMA_SxCR_PINC;                                       // disable peref increment
     cr |= 0U;                                                   // direction P2M 
@@ -129,7 +129,7 @@ bmml_status_t adc_dma_acquire(ADC_TypeDef *reg, DMA_TypeDef *dma, uint8_t stream
     adc->res->reg->SR  = 0U;
     adc->status = BMML_OK;
 
-    // Setup freq (max 18Mhz)
+    // Setup ADC clock (max 36 MHz, see bmml_calc_adc_prescaler)
     ADC->CCR &= ~ADC_CCR_ADCPRE; // reset prescaler
     uint32_t adcpre = bmml_calc_adc_prescaler(get_apb2_clock_hz());
     ADC->CCR |= (adcpre << ADC_CCR_ADCPRE_Pos);
