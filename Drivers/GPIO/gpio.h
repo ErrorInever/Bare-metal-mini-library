@@ -159,11 +159,15 @@ static inline void gpio_reset(const gpio_t *gpio) {
 
 
 /** * @brief Inverts the current digital logic output state of a pin.
- * * Accesses the Output Data Register (`ODR`) to toggle the targeted bitmask value.
+ * * Reads `ODR` and flips the pin with a single `BSRR` write (does not disturb the other pins of the port).
  * * @param[in] gpio Pointer to the target pin descriptor context.
  */
 static inline void gpio_toggle(const gpio_t *gpio) {
-    gpio->port->ODR ^= (1U << gpio->pin);
+    /* Same trick as HAL: one BSRR write, so other pins of the port that an ISR changes in the
+       meantime are never overwritten (a read-modify-write of ODR could do that). */
+    const uint32_t mask = (1U << gpio->pin);
+    const uint32_t odr  = gpio->port->ODR;
+    gpio->port->BSRR = ((odr & mask) << 16U) | (~odr & mask);
 }
 
 
